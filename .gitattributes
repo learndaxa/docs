@@ -1,0 +1,6 @@
+# Ignore all files from Linguist stats
+* linguist-detectable=false
+
+# Re-enable only Markdown and MDX files
+*.md linguist-detectable=true
+*.mdx linguist-detectable=true

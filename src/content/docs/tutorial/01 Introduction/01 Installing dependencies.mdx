@@ -1,0 +1,122 @@
+---
+title: Installing dependencies
+description: Installing all necessary tools to use Daxa as a dependency
+slug: "tutorial/introduction/installing-dependencies"
+editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/01 Introduction/01_Installing_dependencies.mdx
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+This guide walks you through installing the tools you need for Daxa development on **Windows** and **Linux**. If you're experienced with Vulkan or C++, you may already have some of these tools.
+
+:::note
+It's recommended to follow these steps carefully if you're new to Vulkan or C++.
+:::
+
+---
+
+## Windows
+
+### 1. Visual Studio
+
+We'll use the **Visual Studio compiler** on Windows (instead of Clang) due to current issues with Clang on Windows. You can install Visual Studio from the [official website](https://visualstudio.microsoft.com/de/vs/community/). Make sure you **select the "Desktop development with C++" component** during the setup.
+
+### 2. Clang & Ninja
+
+<Steps>
+
+1. **Install Chocolatey** (Windows package manager) from an **elevated** (administrator) PowerShell session:
+
+    ```powershell
+    Set-ExecutionPolicy Bypass -Scope Process -Force; `
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+    [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; `
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    ```
+
+    :::caution
+    If PowerShell requests script execution permissions, enable them with:
+
+    ```powershell
+    Set-ExecutionPolicy AllSigned
+    ```
+
+    :::
+
+2. Install LLVM (Clang) and Ninja
+
+    ```powershell
+    choco install llvm
+    choco install ninja
+    ```
+
+</Steps>
+
+### 3. Misc Tools
+
+Install the following:
+
+- [Git](https://git-scm.com/downloads/win)
+- [Cmake](https://cmake.org/download/)
+
+Download each installer from their official site and follow the wizard to complete installation.
+
+### 4. Vulkan SDK
+
+Download the [Vulkan SDK for Windows](https://vulkan.lunarg.com/sdk/home#windows). During installation, **uncheck "Debuggable Shader API Libraries"** to avoid conflicts with glslang.
+
+---
+
+## Linux
+
+### 1. Install Basic Tools
+
+<Tabs syncKey="linux_distro_family">
+<TabItem label="Debian/Ubuntu">
+    ```bash
+    sudo apt update
+    sudo apt install ninja-build clang cmake git
+    ```
+</TabItem>
+<TabItem label="Arch">
+    ```bash
+    sudo pacman -Syu
+    sudo pacman -S ninja-build clang cmake git
+    ```
+</TabItem>
+</Tabs>
+
+### 2. Vulkan SDK
+
+Follow the [LunarG Vulkan SDK Installation Guide](https://vulkan.lunarg.com/doc/view/latest/linux/getting_started.html) for detailed steps on your distribution.
+
+<Tabs syncKey="linux_distro">
+<TabItem label="Ubuntu 24.04 (Noble Numbat)">
+    ```bash
+    wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+    sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list http://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+    sudo apt update
+    sudo apt install vulkan-sdk
+    ```
+</TabItem>
+<TabItem label="Ubuntu 22.04 (Jammy Jellyfish)">
+    ```bash
+    wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+    sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list http://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+    sudo apt update
+    sudo apt install vulkan-sdk
+    ```
+</TabItem>
+</Tabs>
+
+If you're using another distribution, see [LunarG's official instructions](https://vulkan.lunarg.com/sdk/home#linux).
+
+## Installing VSCode (Windows & Linux)
+
+We'll use [Visual Studio Code](https://code.visualstudio.com/download) as our code editor for the tutorial. Other IDEs (e.g., [CLion](https://www.jetbrains.com/clion/)) can also work, but the instructions may differ. For a smoother experience, use VSCode with the following extensions:
+
+1. C/C++ Extension Pack (`ms-vscode.cpptools-extension-pack`)
+2. GLSL Lint (`dtoplak.vscode-glsllint`)
+
+You're now ready to set up your Daxa development environment. Next, we'll walk through configuring VSCode and creating your first Daxa project.
