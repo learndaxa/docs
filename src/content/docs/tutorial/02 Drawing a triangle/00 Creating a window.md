@@ -2,7 +2,6 @@
 title: Creating a Window
 description: Learn how to set up a blank window for your graphics application using GLFW and Daxa.
 slug: "tutorial/drawing-a-triangle/creating-a-window"
-: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/00_Creating_a_window.md
 ---
 
 ## Introduction
