@@ -65,18 +65,31 @@ export default defineConfig({
 					],
 					{
 						topics: {
-
+							
 						}
 					}
 				)
 			],
 			components: {
 				Sidebar: './src/components/Sidebar.astro',
+				Head: './src/components/Head.astro',
 			},
 			lastUpdated: true,
 			editLink: {
 				baseUrl: "https://github.com/learndaxa/docs/edit/main/",
 			},
+			customCss: [
+				'./src/custom.css'
+			],
+			head: [
+				{
+					tag: 'meta',
+					attrs: {
+						name: 'theme-color',
+						content: '#8467b6'
+					}
+				}
+			]
 		}),
 	],
 	build: {

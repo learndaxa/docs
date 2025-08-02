@@ -4,7 +4,19 @@ description: The Daxa Documentation provides an extensive learning resource for 
 template: splash
 editUrl: false
 lastUpdated: false
+pagefind: false
 hero:
   title: Daxa Documentation
   tagline: The Daxa Documentation provides an extensive learning resource for the Vulkan abstraction Layer Daxa and is meant as a reference for developers using it.
+  image:
+    file: ../../assets/daxa-logo-square.png
 ---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Next steps
+
+<CardGrid>
+	<LinkCard title="Tutorial" href="/tutorial/" description=""/>
+	<LinkCard title="Wiki" href="/wiki/" description=""/>
+</CardGrid>
