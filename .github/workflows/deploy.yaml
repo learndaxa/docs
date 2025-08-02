@@ -27,6 +27,9 @@ jobs:
         with:
           node-version: '24'
 
+      - name: 'Install d2'
+        run: 'curl -fsSL https://d2lang.com/install.sh | sh -s --'
+
       - name: Building Static Site
         run: |
           npm ci
