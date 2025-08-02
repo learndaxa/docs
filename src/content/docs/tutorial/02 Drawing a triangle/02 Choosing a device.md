@@ -2,7 +2,7 @@
 title: Choosing a device
 description: Choosing a device
 slug: "tutorial/drawing-a-triangle/choosing-a-device"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/02_Choosing_a_device.md
+: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/02_Choosing_a_device.md
 ---
 
 ## Device selection

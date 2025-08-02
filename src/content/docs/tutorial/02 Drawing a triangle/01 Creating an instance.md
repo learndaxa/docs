@@ -2,7 +2,6 @@
 title: Creating an instance
 description: Creating an instance
 slug: "tutorial/drawing-a-triangle/creating-an-instance"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/01_Creating_an_instance.md
 ---
 
 ## Include the header

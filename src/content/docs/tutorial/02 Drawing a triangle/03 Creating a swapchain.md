@@ -2,7 +2,6 @@
 title: Creating a swapchain
 description: Creating a swapchain
 slug: "tutorial/drawing-a-triangle/creating-a-swapchain"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/03_Creating_a_swapchain.md
 ---
 
 ## Swapchain creation

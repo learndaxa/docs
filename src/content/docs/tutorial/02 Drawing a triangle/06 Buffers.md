@@ -2,7 +2,6 @@
 title: Buffers
 description: Buffers
 slug: "tutorial/drawing-a-triangle/buffers"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/06_Buffers.md
 ---
 
 ## Description

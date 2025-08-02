@@ -4,5 +4,4 @@ description: The Daxa Wiki provides an extensive resource for the Vulkan abstrac
 tableOfContents: false
 slug: wiki
 hideInSidebar: true
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/index.md
 ---

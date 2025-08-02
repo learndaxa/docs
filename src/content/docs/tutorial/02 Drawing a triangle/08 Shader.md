@@ -2,7 +2,6 @@
 title: Shader
 description: Shader
 slug: "tutorial/drawing-a-triangle/shader"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/08_Shader.md
 ---
 
 ## Description

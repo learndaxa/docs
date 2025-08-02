@@ -2,7 +2,6 @@
 title: Features
 description: Features
 slug: wiki/features
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/features.md
 ---
 
 

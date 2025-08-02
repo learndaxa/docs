@@ -2,7 +2,6 @@
 title: Device
 description: Device
 slug: wiki/device
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/device.md
 ---
 
 ## Description

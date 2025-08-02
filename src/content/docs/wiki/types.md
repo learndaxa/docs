@@ -2,7 +2,6 @@
 title: Types
 description: Types
 slug: wiki/types
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/types.md
 ---
 
 ## Description

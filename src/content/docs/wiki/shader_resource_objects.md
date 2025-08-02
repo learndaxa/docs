@@ -2,7 +2,6 @@
 title: Shader Ressource Objects
 description: Shader Ressource Objects
 slug: wiki/shader-ressource-objects
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/shader_resource_objects.md
 ---
 
 ## Id vs. Handle

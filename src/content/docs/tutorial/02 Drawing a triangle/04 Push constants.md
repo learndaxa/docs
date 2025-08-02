@@ -2,7 +2,6 @@
 title: Push constants
 description: Push constants
 slug: "tutorial/drawing-a-triangle/push-constants"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/04_Push_constants.md
 ---
 
 ## Description

@@ -2,7 +2,6 @@
 title: Creating a pipeline
 description: Creating a pipeline
 slug: "tutorial/drawing-a-triangle/creating-a-pipeline"
-editUrl: https://github.com/learndaxa/Tutorial/edit/main/docs/02 Drawing a triangle/05_Creating_a_pipeline.md
 ---
 
 ## Pipeline manager

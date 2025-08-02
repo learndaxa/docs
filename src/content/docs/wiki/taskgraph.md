@@ -2,7 +2,6 @@
 title: TaskGraph
 description: TaskGraph
 slug: wiki/taskgraph
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/taskgraph.md
 ---
 
 ## TaskGraph

@@ -2,7 +2,6 @@
 title: Building
 description: Building Daxa
 slug: wiki/building
-editUrl: https://github.com/learndaxa/Wiki/edit/main/docs/building.md
 ---
 
 ## Getting Started
