@@ -47,6 +47,7 @@ export function walkDocsRecursive(dir: string): StarlightSidebarList {
       const parsed = matter(fileContent);
 
       if (parsed.data.hideInSidebar && parsed.data.hideInSidebar === true) continue;
+      if (import.meta.env.PROD && parsed.data.draft && parsed.data.draft === true) continue;
 
       result.push(String(parsed.data.slug ?? ''));
     }
