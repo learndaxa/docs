@@ -6,4 +6,4 @@ const props = Astro.props as Record<string, never>;
 
 <OriginalHead {...props} />
 
-<script is:inline defer src="https://metrics.daxa.dev/script.js" data-website-id={import.meta.env.PROD ? '8f1d9013-80e4-46d4-b8ff-72903ce5f169' : ''}></script>
+{import.meta.env.PROD && <script is:inline defer src="https://metrics.daxa.dev/script.js" data-website-id="8f1d9013-80e4-46d4-b8ff-72903ce5f169" />}
