@@ -130,26 +130,3 @@ loop_task_graph.complete({});
 ```
 
 We have now created a new task graph that can simply repeat the steps it was given,
-
-## Creating a vertex uploading TaskGraph
-
-Now we record a secondary task graph, that is only executed once (in our sample code). This task graph uploads data to the 'vertex buffer'. Task Graph resources automatically link between graphics at runtime, so you don't need to be concerned about the synchronization of the vertex buffer between the two graphs.
-
-Because this is only executed once, we can define it in a separate context.
-
-```cpp
-{
-    auto upload_task_graph = daxa::TaskGraph({
-        .device = device,
-        .name = "upload",
-    });
-
-    upload_task_graph.use_persistent_buffer(task_vertex_buffer);
-
-    upload_vertex_data_task(upload_task_graph, task_vertex_buffer);
-
-    upload_task_graph.submit({});
-    upload_task_graph.complete({});
-    upload_task_graph.execute({});
-}
-```
