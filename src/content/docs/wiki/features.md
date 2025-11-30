@@ -52,6 +52,17 @@ slug: wiki/features
   - Very helpful to destroy things like staging or scratch buffers.
   - Necessary as it is not legal to destroy objects that are used in commands that are not yet submitted to the GPU.
 
+## Modern Synchronization
+
+- On daxas target hardware (RDNA3+, Turing, Arc+), image layout general is optimal for all access.
+- Daxa applies image layout general to all image operations (aside from present) and abstracts layout nearly completely (still exposes explicit undefined->general and general->present_src transitions).
+- Image barriers are simplified (no aspect, no subresource, no queue ownership transfer, no prev/post layout, simplified enum for layout transitions).
+- Instead of exposing queue ownership transfers via image barriers, images are tagged as either concurrent or exclusive access in creation.
+- Pipeline barrier cmd recorder calls automatically batch successive calls
+- Barriers match the Sync2 api of vulkan, pairing stage, access and resource for each barrier to allow for better driver hinting
+- Buffer sync is much simplified. As no hardware seems to benefit from any explicit buffer sync, buffers are always queue concurrent, have all (except a certain few) vulkan usage flags set and there are no explicit buffer memory barriers.
+- Timeline semaphores are first class in daxa, used extensively in the api such as the swapchain.
+
 ## Tiny Pipelines
 
 - Pipelines are much simpler in Daxa compared to normal Vulkan, they are created with parameter structs that have sensible defaults set for all parameters.

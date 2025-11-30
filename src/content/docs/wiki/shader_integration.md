@@ -87,6 +87,8 @@ This can significantly reduce boilerplate, as for most images, only the default 
 
 > Daxa only supports separate images and samplers, so no combined image samplers. This simplifies the API and allows for more consistent HLSL support.
 
+> Daxa uses general image layout for everyhing, the storage and sampled bindless descriptors for each image both assume general layout. This allows for simultaneous access of images as storage and sampled. 
+
 ### Image Access in Glsl
 
 The shader access works by transforming a `daxa_ImageViewId` with or without a `daxa_SamplerId` into a Glsl `texture`, `image`, or `sampler` locally.
