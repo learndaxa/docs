@@ -374,7 +374,7 @@ Only task resources and task attachments are shown - the usual setup (instance/d
 The swapchain is represented in the graph by an `ExternalTaskImage`. It is created once and re-assigned every frame:
 
 ```c++
-daxa::ExternalTaskImage task_swapchain_image{{.swapchain_image = true, .name = "swapchain"}};
+daxa::ExternalTaskImage task_swapchain_image{{.is_swapchain_image = true, .name = "swapchain"}};
 daxa::ImageId swapchain_image = {};
 ```
 
@@ -540,7 +540,7 @@ while (keep_running())
         // swapchain is being resized, skip this frame
         continue;
     }
-    task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
+    task_swapchain_image.set_image(swapchain_image);
 
     task_graph.execute({});
 

@@ -18,14 +18,14 @@ See [TaskGraph](/wiki/taskgraph/) for the full picture: how tasks declare their 
 
 ## Creating a Rendering task
 
-Before we can use a task graph, we first need to create actual tasks that can be executed. The first task we are going to create will upload vertex data to the GPU.
+Before we can use a task graph, we first need to create actual tasks that can be executed. The first (and only) task we are going to create will draw our triangle into a color attachment.
 
-Each task struct must consist of a child struct 'Uses' that will store all shared resources, as well as a callback function that gets called whenever the task is executed.
+A task is built from a list of attachments - declaring which task resources it uses and how - and a callback that records the actual commands when the graph executes the task.
 
 For our task, this base task structure will look like this:
 
 ```cpp
-daxa::Task task = daxa::RasterTask("draw task")
+auto task = daxa::RasterTask("draw task")
     // adds an attachment:
     // * stage = color_attachment, 
     // * access = reads_writes,
@@ -58,7 +58,6 @@ Within the task callback we have access to the device, a fast transient allocato
 +    auto image_info = ti.info(color_target).value();
 +    auto image_id = ti.id(color_target);
 +    auto image_view_id = ti.view(color_target);
-+    auto image_layout = ti.layout(color_target);
 +
 +    // When starting a render pass via a rasterization pipeline, daxa "eats" a generic command recorder
 +    // and turns it into a RenderCommandRecorder.
@@ -110,7 +109,7 @@ Back in our main method, the first we'll make is the swap chain image task resou
 // src/main.cpp
     vert_buf_ptr[2] = {.position = {+0.0f, -0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}};
 
-+    auto task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
++    auto task_swapchain_image = daxa::ExternalTaskImage{{.is_swapchain_image = true, .name = "swapchain image"}};
 
     while (!window.should_close())
 ```
@@ -119,7 +118,7 @@ We need to create the actual task graph itself:
 
 ```diff lang="cpp"
 // src/main.cpp
-    auto task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
+    auto task_swapchain_image = daxa::ExternalTaskImage{{.is_swapchain_image = true, .name = "swapchain image"}};
 
 +    auto loop_task_graph = daxa::TaskGraph({
 +        .device = device,
@@ -142,7 +141,7 @@ The vertex buffer is read only after initialization, therefor it needs no runtim
         .name = "loop",
     });
 
-+    loop_task_graph.use_persistent_image(task_swapchain_image);
++    loop_task_graph.register_image(task_swapchain_image);
 
     while (!window.should_close())
 ```
@@ -151,12 +150,12 @@ Since we need the task graph to do something, we add the task that draws to the 
 
 ```diff lang="cpp"
 // src/main.cpp
-    loop_task_graph.use_persistent_image(task_swapchain_image);
+    loop_task_graph.register_image(task_swapchain_image);
 
 +    auto draw_swapchain_task =
 +        daxa::RasterTask("draw triangle")
 +            .color_attachment.reads_writes(daxa::ImageViewType::REGULAR_2D, task_swapchain_image.view())
-+            .executes(draw_swapchain_task_callback, pipeline.get(), buffer_id);
++            .executes(draw_swapchain_task_callback, pipeline.get(), task_swapchain_image.view(), buffer_id);
 +
 +    // Insert the task into the graph:
 +    loop_task_graph.add_task(draw_swapchain_task);
