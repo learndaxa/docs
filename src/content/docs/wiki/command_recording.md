@@ -8,6 +8,10 @@ slug: wiki/command-recording
 
 In Daxa, all GPU work - copies, compute dispatches, draws, ray tracing, acceleration structure builds - is recorded into a `daxa::CommandRecorder`. Once recording is finished, the recorder is turned into a `daxa::ExecutableCommandList`, which is then handed to `device.submit_commands(...)` to actually run on the GPU.
 
+> If you'd rather not record and synchronize commands by hand, [TaskGraph](/wiki/taskgraph/) builds a `CommandRecorder` for you each frame and inserts barriers/semaphores automatically based on declared task resource usages.
+
+`daxa::CommandRecorder` is created from a `daxa::Device` - see [Initialization and Device](/wiki/initialization-and-device/) for how a device is created.
+
 ```cpp
 daxa::CommandRecorder recorder = device.create_command_recorder({.name = "my command recorder"});
 
@@ -68,6 +72,8 @@ device.submit_commands({
 
 Daxa also provides `copy_buffer_to_image`, `copy_image_to_buffer`, `copy_image_to_image`, `blit_image_to_image`, `clear_buffer`, and `clear_image` for the other common cases.
 
+See [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/) for a complete staging-buffer upload pattern (including the barriers above) and mip-chain generation with `blit_image_to_image`, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the buffers/images being copied.
+
 ### Compute dispatch
 
 Compute pipelines are bound and dispatched directly on the `CommandRecorder` - no renderpass is needed:
@@ -92,6 +98,8 @@ device.submit_commands({
 ```
 
 `dispatch_indirect` is also available for dispatches whose size is computed on the GPU.
+
+See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#compute-pipelines) for creating `compute_pipeline`, and [Shader Integration](/wiki/shader-integration/#push-constants) for how `MyComputePush` and bindless image/buffer handles are declared and read on the shader side.
 
 ### Raster pass
 
@@ -136,6 +144,8 @@ device.submit_commands({
 
 Only `RenderCommandRecorder` exposes draw-related functions (`draw`, `draw_indexed`, `draw_indirect`, `set_viewport`, `set_scissor`, ...), and only `CommandRecorder` exposes copies, barriers, and dispatches - so the type system enforces where each command is legal.
 
+See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#raster-pipelines--renderpasses) for `RasterPipelineInfo`, render attachments, and depth testing, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the `vertex_buffer`/`render_target` resources referenced here.
+
 ## Pipeline barriers
 
 Daxa keeps all resources in image layout `GENERAL`. The only layout transitions you have to do explicitly are the initial transition to `GENERAL` and the transition to `PRESENT_SRC` before presenting a swapchain image (see `daxa::ImageLayoutOperation`). All synchronization WITHIN a command list is expressed with `pipeline_barrier`/`pipeline_image_barrier` and `daxa::Access`/`daxa::AccessConsts`, describing which pipeline stages read/write a resource before and after the barrier. Successive barrier calls are batched together and flushed as a single `vkCmdPipelineBarrier2` once a non-barrier command is recorded.
@@ -159,6 +169,8 @@ u64 submit_index = device.submit_commands({
 
 Every call to `submit_commands` returns a unique, monotonically increasing submit index. This index can be compared against `device.oldest_pending_submit_index()` to know when the GPU has caught up to a particular point - which is exactly what `device.collect_garbage()` uses to decide when zombified SROs can finally be destroyed.
 
+See [Synchronization](/wiki/synchronization/) for the full picture on `wait_binary_semaphores`/`signal_binary_semaphores`/`signal_timeline_semaphores`, multi-queue submission, and waiting on submit indices from the CPU.
+
 ## Presenting
 
 After submitting the commands that render into a swapchain image, present it with `device.present_frame`:
@@ -169,3 +181,5 @@ device.present_frame({
     .swapchain = swapchain,
 });
 ```
+
+See [Swapchain](/wiki/swapchain/#synchronizing-a-frame) for where `current_acquire_semaphore()`/`current_present_semaphore()`/`current_timeline_pair()` come from, and [Swapchain: Full Example](/wiki/swapchain/#full-example-a-frame-loop) for a complete acquire/render/present frame loop.

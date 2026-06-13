@@ -43,6 +43,8 @@ Bindless provides several advantages:
 3. **Flexibility**: working with dynamic and large datasets is easy, since shaders can access any resource by handle.
 4. **Simpler**: Daxa's bindless API surface is super small compared to typical Vulkan/DX12 descriptor management, its much easier to learn and potential misuse is far less likely.
 
+See [Shader Integration](/wiki/shader-integration/#bindless-access-images--buffers) for how `BufferId`/`ImageViewId`/`SamplerId`/`TlasId` are declared and dereferenced on the shader side.
+
 ## Object Lifetimes
 
 ### Deferred destruction - Zombies?
@@ -100,6 +102,8 @@ MyType * ptr = device.buffer_host_address_as<MyType>(staging_buffer).value();
 * Use `daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE` for buffers that need fast GPU reads with sequential host writes. Typically lives in device VRAM.
 * Use `daxa::MemoryFlagBits::HOST_ACCESS_RANDOM` for buffers that need random CPU read/write access (e.g. readback). Typically lives in host RAM.
 
+See [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/) for uploading data into a buffer via either a direct host-mapped write or a staging buffer + GPU copy.
+
 ### Images & Image Views
 
 ```cpp
@@ -119,6 +123,8 @@ daxa::ImageViewId image_view = device.create_image_view({
 ```
 
 Every image also has an implicit default view covering its full extent, available via `image.default_view()`.
+
+See [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/) for getting pixel data into an image and generating mip chains, and [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#renderpass-attachments) for using images/image views as render attachments.
 
 ### Samplers
 
@@ -142,7 +148,7 @@ daxa::TlasId tlas = device.create_tlas({
 });
 ```
 
-Building the actual acceleration structure contents happens later via build commands on a `daxa::CommandRecorder`.
+Building the actual acceleration structure contents happens later via build commands on a `daxa::CommandRecorder` (see [Command Recording & Submission](/wiki/command-recording/)). Once built, a TLAS is bound for tracing via [Pipelines & Renderpasses: Ray Tracing Pipelines](/wiki/pipelines-and-renderpasses/#ray-tracing-pipelines).
 
 ## Querying, Validating & Destroying Objects
 
@@ -170,4 +176,4 @@ device.destroy_tlas(tlas);
 device.destroy_blas(blas);
 ```
 
-As described in [Deferred destruction](#deferred-destruction---zombies), these calls zombify the object - the real GPU-side destruction happens later, in `device.collect_garbage()`.
+As described in [Deferred destruction](#deferred-destruction---zombies), these calls zombify the object - the real GPU-side destruction happens later, in `device.collect_garbage()`. This is the same submit-index-based mechanism described in [Synchronization: Building Your Own Deferred Destruction](/wiki/synchronization/#building-your-own-deferred-destruction), which you can reuse for your own CPU-side resources (e.g. staging buffers).

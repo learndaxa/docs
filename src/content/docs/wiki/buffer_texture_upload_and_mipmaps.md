@@ -8,7 +8,7 @@ slug: wiki/buffer-texture-upload-and-mipmaps
 
 CPU-written data usually can't go straight into the memory the GPU reads fastest from. This page covers the two ways to get data onto the GPU - writing directly into a host-mapped buffer, or going through a staging buffer and a copy - and then uses the same staging pattern to upload texture data and generate a mip chain with `blit_image_to_image`.
 
-This builds on [Command Recording & Submission](/wiki/command-recording/) and [Synchronization](/wiki/synchronization/) - see those pages for more detail on `CommandRecorder`, `pipeline_barrier`, and `pipeline_image_barrier`.
+This builds on [Command Recording & Submission](/wiki/command-recording/) and [Synchronization](/wiki/synchronization/) - see those pages for more detail on `CommandRecorder`, `pipeline_barrier`, and `pipeline_image_barrier`. See [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for the full `BufferInfo`/`ImageInfo` creation parameters used below.
 
 ## Uploading to a Buffer
 
@@ -199,7 +199,9 @@ device.submit_commands({
 
 `src_image` and `dst_image` can be the same `ImageId` here because `src_slice`/`dst_slice` select different mip levels of it - source and destination never overlap. The barrier between iterations is required because each blit both reads the mip written by the previous iteration and writes a new one; without it, the GPU could run these blits out of order or overlapped and read a partially-written mip.
 
-This is the cheap, hardware-accelerated way to build a mip chain. If you need a different downsampling filter (e.g. a Gaussian blur, or one that handles alpha/normal maps specially), do the same thing with a compute shader dispatch per mip level instead of `blit_image_to_image`, with a `pipeline_barrier` between dispatches in place of the image barriers above.
+This is the cheap, hardware-accelerated way to build a mip chain. If you need a different downsampling filter (e.g. a Gaussian blur, or one that handles alpha/normal maps specially), do the same thing with a compute shader dispatch per mip level instead of `blit_image_to_image`, with a `pipeline_barrier` between dispatches in place of the image barriers above - see [Command Recording & Submission: Compute Dispatch](/wiki/command-recording/#compute-dispatch).
+
+Once uploaded, see [Shader Integration](/wiki/shader-integration/#bindless-access-images--buffers) for sampling the image via its bindless `ImageViewId`, and [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#renderpass-attachments) for using it as a render attachment instead of a sampled texture.
 
 ## Host Writes vs. GPU Copy Commands
 
