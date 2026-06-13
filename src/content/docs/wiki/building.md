@@ -115,6 +115,62 @@ target_compile_features(my_app PRIVATE cxx_std_20)
 
 A git submodule pointing at the Daxa repo plus `add_subdirectory(deps/daxa)` works just as well - either way, the important part is that the `DAXA_ENABLE_UTILS_*` variables from the table above are set *before* Daxa's `CMakeLists.txt` is processed, since that's what `cmake/deps.cmake` and the `#if DAXA_BUILT_WITH_UTILS_*` checks key off of.
 
+### A Larger Example: Submodule + `cmake/deps.cmake`
+
+Larger Daxa-based projects (e.g. [Timberdoodle](https://github.com/Ipotrick/Timberdoodle)) tend to vendor Daxa as a **git submodule** under `deps/daxa` and collect every other dependency in a single `cmake/deps.cmake`, mirroring the same `if (NOT TARGET ...)` + `FetchContent` pattern Daxa's own `cmake/deps.cmake` uses:
+
+```cmake
+# cmake/deps.cmake
+find_package(Vulkan REQUIRED)
+include(FetchContent)
+
+# Daxa is vendored as a git submodule under deps/daxa - clone it if missing.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/daxa/CMakeLists.txt")
+    find_package(Git REQUIRED)
+    execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init
+        WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
+        COMMAND_ERROR_IS_FATAL ANY)
+endif()
+
+# Any further project dependencies go here, following the same
+# `if (NOT TARGET ...)` + FetchContent_Declare/FetchContent_MakeAvailable
+# guard pattern Daxa's own cmake/deps.cmake uses.
+```
+
+The top-level `CMakeLists.txt` includes `deps.cmake`, configures Daxa's utils, then adds Daxa and your own executable:
+
+```cmake
+# CMakeLists.txt
+cmake_minimum_required(VERSION 3.21)
+project(MyApp)
+
+include(cmake/deps.cmake)
+
+# Configure Daxa's optional utilities *before* pulling it in.
+set(DAXA_ENABLE_UTILS_IMGUI true)
+set(DAXA_ENABLE_UTILS_MEM true)
+set(DAXA_ENABLE_UTILS_TASK_GRAPH true)
+set(DAXA_ENABLE_UTILS_PIPELINE_MANAGER_GLSLANG true)
+set(DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SLANG true)
+set(DAXA_ENABLE_TESTS false)
+add_subdirectory(${PROJECT_SOURCE_DIR}/deps/daxa)
+
+add_executable(${PROJECT_NAME}
+    "src/main.cpp"
+)
+
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    daxa::daxa
+)
+```
+
+A few things worth noting about this structure:
+
+- Setting `DAXA_ENABLE_TESTS false` skips building Daxa's own `tests/` executables (and the GLFW fetch they pull in) as part of your build.
+- `EXCLUDE_FROM_ALL` on a `FetchContent_Declare` keeps a dependency's targets out of the default build/install set until something actually links against them - use it for anything you add to `deps.cmake`.
+- Because both your `deps.cmake` and Daxa's `cmake/deps.cmake` guard every `FetchContent_Declare` with `if (NOT TARGET ...)`, declaring a dependency Daxa also fetches (e.g. `glfw`, `imgui::imgui`) in your own `deps.cmake` *before* `add_subdirectory(deps/daxa)` makes Daxa reuse your version instead of fetching its own - useful for pinning a specific version or build configuration.
+
 ## Custom Validation
 
 > **Note**: The following steps are only meant for Daxa maintainers. They are not needed if you simply want to use Daxa in a project.
