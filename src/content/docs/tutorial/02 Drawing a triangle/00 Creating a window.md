@@ -213,6 +213,8 @@ auto get_native_window_info() const -> daxa::NativeWindowInfo {
 
 </details>
 
+`get_native_window_info()` is what we'll pass to `device.create_swapchain()` and `device.choose_swapchain_surface_format()` in [Creating a Swapchain](/tutorial/drawing-a-triangle/creating-a-swapchain/) - see [Swapchain](/wiki/swapchain/) for the full swapchain API.
+
 ## 6. Utility Functions
 
 To simplify window management, implement utility methods for common tasks like mouse control, checking if the window should close, and handling updates.

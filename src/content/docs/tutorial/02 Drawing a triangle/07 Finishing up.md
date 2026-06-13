@@ -14,109 +14,125 @@ Each frame we need to:
 4. Submit the commands and present the frame.
 5. Let the device reclaim any resources that are no longer in use.
 
-```cpp
-while (!window.should_close())
-{
-    window.update();
+:::tip[Learn more]
+See [Swapchain](/wiki/swapchain/) for what `acquire_next_image()`/`resize()` actually do, frames-in-flight, and a fully annotated version of this loop.
+:::
 
-    if (window.swapchain_out_of_date)
+```diff lang="cpp"
+// src/main.cpp
+    while (!window.should_close())
     {
-        swapchain.resize();
-        window.swapchain_out_of_date = false;
+        window.update();
+
++        if (window.swapchain_out_of_date)
++        {
++            swapchain.resize();
++            window.swapchain_out_of_date = false;
++        }
++
++        // acquire_next_image waits until a frame in flight is available, then attempts
++        // to acquire a new swapchain image. On failure it returns an empty ImageId.
++        daxa::ImageId swapchain_image = swapchain.acquire_next_image();
++        if (swapchain_image.is_empty())
++        {
++            continue;
++        }
++
++        // Record and submit frame gpu commands
++        {
++            daxa::CommandRecorder recorder = device.create_command_recorder({.name = "Main Loop Cmd Recorder"});
++
++            daxa::ImageInfo swapchain_image_info = device.image_info(swapchain_image).value();
++
++            // Daxa uses image layout GENERAL everywhere, so the only explicit layout
++            // transitions needed are: first use of an image (TO_GENERAL) and conversion
++            // to a presentable format (TO_PRESENT_SRC) - see Learn more below.
++            recorder.pipeline_image_barrier({
++                .dst_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
++                .image = swapchain_image,
++                .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
++            });
++
++            // Starting a render pass turns the CommandRecorder into a RenderCommandRecorder,
++            // which can only record commands valid within a render pass.
++            daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
++                .color_attachments = std::array{
++                    daxa::RenderAttachmentInfo{
++                        .image_view = swapchain_image.default_view(),
++                        .load_op = daxa::AttachmentLoadOp::CLEAR,
++                        .clear_value = std::array<daxa::f32, 4>{0.1f, 0.0f, 0.5f, 1.0f},
++                    },
++                },
++                .render_area = {.width = swapchain_image_info.size.x, .height = swapchain_image_info.size.y},
++            });
++
++            render_recorder.set_pipeline(*pipeline);
++
++            // The only way to send data to a shader in daxa is via push constants.
++            // Here, we send the buffer pointer to the vertices to the gpu via a push constant.
++            render_recorder.push_constant(MyPushConstant{.vertices = device.device_address(buffer_id).value()});
++
++            render_recorder.draw({.vertex_count = 3});
++
++            // VERY IMPORTANT! A renderpass must be ended after finishing, which returns
++            // back the original command recorder.
++            recorder = std::move(render_recorder).end_renderpass();
++
++            recorder.pipeline_image_barrier({
++                .src_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
++                .image = swapchain_image,
++                .layout_operation = daxa::ImageLayoutOperation::TO_PRESENT_SRC,
++            });
++
++            daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
++
++            // Submitted/presented commands touching a swapchain image must wait on the
++            // current acquire semaphore and signal the current present semaphore + timeline pair.
++            device.submit_commands({
++                .command_lists = std::array{cmd_list},
++                .wait_binary_semaphores = std::array{swapchain.current_acquire_semaphore()},
++                .signal_binary_semaphores = std::array{swapchain.current_present_semaphore()},
++                .signal_timeline_semaphores = std::array{swapchain.current_timeline_pair()},
++            });
++
++            device.present_frame({
++                .wait_binary_semaphores = std::array{swapchain.current_present_semaphore()},
++                .swapchain = swapchain,
++            });
++        }
++
++        // The device performs all memory reclaiming in the collect_garbage call.
++        // It's best to call it once at the end of each frame.
++        device.collect_garbage();
     }
-
-    // acquire_next_image will wait until a frame in flight is available, then attempt to acquire a new swapchain image.
-    // If the acquisition fails, it will return a null image id (is_empty() -> true).
-    daxa::ImageId swapchain_image = swapchain.acquire_next_image();
-    if (swapchain_image.is_empty())
-    {
-        continue;
-    }
-
-    // Record and submit frame gpu commands
-    {
-        daxa::CommandRecorder recorder = device.create_command_recorder({.name = "Main Loop Cmd Recorder"});
-
-        daxa::ImageInfo swapchain_image_info = device.image_info(swapchain_image).value();
-
-        // Daxa uses image layout GENERAL for all access, so there is generally no need
-        // for image layout barriers in daxa. There are only two transitions that must
-        // still be done explicitly:
-        // * initialization of an image before its first usage via daxa::ImageLayoutOperation::TO_GENERAL
-        // * conversion to a presentable format via daxa::ImageLayoutOperation::TO_PRESENT_SRC
-        recorder.pipeline_image_barrier({
-            .dst_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
-            .image = swapchain_image,
-            .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
-        });
-
-        // When starting a render pass via a rasterization pipeline, the cmd recorder type is changed to daxa::RenderCommandRecorder.
-        // Only the RenderCommandRecorder can record raster commands, and only commands valid within a render pass.
-        daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
-            .color_attachments = std::array{
-                daxa::RenderAttachmentInfo{
-                    .image_view = swapchain_image.default_view(),
-                    .load_op = daxa::AttachmentLoadOp::CLEAR,
-                    .clear_value = std::array<daxa::f32, 4>{0.1f, 0.0f, 0.5f, 1.0f},
-                },
-            },
-            .render_area = {.width = swapchain_image_info.size.x, .height = swapchain_image_info.size.y},
-        });
-
-        render_recorder.set_pipeline(*pipeline);
-
-        // The only way to send data to a shader in daxa is via push constants.
-        // Here, we send the buffer pointer to the vertices to the gpu via a push constant.
-        render_recorder.push_constant(MyPushConstant{.vertices = device.device_address(buffer_id).value()});
-
-        render_recorder.draw({.vertex_count = 3});
-
-        // VERY IMPORTANT! A renderpass must be ended after finishing!
-        // The ending of a render pass returns back the original command recorder.
-        recorder = std::move(render_recorder).end_renderpass();
-
-        recorder.pipeline_image_barrier({
-            .src_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
-            .image = swapchain_image,
-            .layout_operation = daxa::ImageLayoutOperation::TO_PRESENT_SRC,
-        });
-
-        daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
-
-        // There are a few usage rules around the swapchain images in vulkan and daxa:
-        // * all submitted commands that access an acquired swapchain image MUST wait on the current acquire semaphore
-        // * the last submitted commands accessing the swapchain image to be presented MUST signal the current present semaphore
-        // * the last submitted commands accessing the swapchain image MUST signal the current timeline pair
-        // * the present MUST wait on the current present semaphore
-        device.submit_commands({
-            .command_lists = std::array{cmd_list},
-            .wait_binary_semaphores = std::array{swapchain.current_acquire_semaphore()},
-            .signal_binary_semaphores = std::array{swapchain.current_present_semaphore()},
-            .signal_timeline_semaphores = std::array{swapchain.current_timeline_pair()},
-        });
-
-        device.present_frame({
-            .wait_binary_semaphores = std::array{swapchain.current_present_semaphore()},
-            .swapchain = swapchain,
-        });
-    }
-
-    // The device performs all memory reclaiming in the collect_garbage call.
-    // It's best to call it once at the end of each frame.
-    device.collect_garbage();
-}
 ```
+
+:::tip[Learn more]
+- [Command Recording & Submission](/wiki/command-recording/#raster-pass) covers `CommandRecorder`/`RenderCommandRecorder`, `begin_renderpass`/`end_renderpass`, and `submit_commands`/`present_frame` in full.
+- [Synchronization](/wiki/synchronization/#image-barriers) explains `pipeline_image_barrier`, the `GENERAL` layout, and why exactly these two `TO_GENERAL`/`TO_PRESENT_SRC` transitions are needed.
+:::
 
 ## Cleaning up
 
 Finally, we can clean up!
 
-```cpp
-device.destroy_buffer(buffer_id);
+```diff lang="cpp"
+// src/main.cpp
+        device.collect_garbage();
+    }
 
-device.wait_idle();
-device.collect_garbage();
++    device.destroy_buffer(buffer_id);
++
++    device.wait_idle();
++    device.collect_garbage();
+
+    return 0;
+}
 ```
+
+:::tip[Learn more]
+See [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/#deferred-destruction---zombies) for what `destroy_buffer` actually does (it's deferred - the buffer becomes a "zombie" until `collect_garbage` after `wait_idle` confirms the GPU is done with it).
+:::
 
 ## Running the code
 

@@ -6,8 +6,11 @@ slug: "tutorial/drawing-a-triangle/push-constants"
 
 ## Description
 
-The Vulkan spec defines Push Constants as:
-> A small bank of values writable via the API and accessible in shaders. Push constants allow the application to set values used in shaders without creating buffers or modifying and binding descriptor sets for each update.
+Push constants are a small bank of values, written from the CPU and read by shaders, that don't require creating a buffer or binding a descriptor set. In Daxa they're the standard way to pass per-draw/per-dispatch data - most commonly a handful of `daxa_BufferPtr`/`daxa_ImageId` handles into bindless resources, as we'll do here.
+
+:::tip[Learn more]
+See [Shader Integration](/wiki/shader-integration/#push-constants) for how push constants work on the shader side, and [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#push-constants) for the size limit (`DAXA_MAX_PUSH_CONSTANT_BYTE_SIZE`, 128 bytes) and the `.push_constant_size` pipeline field.
+:::
 
 ## Implementation
 
@@ -17,27 +20,45 @@ Since this document is treated as a header file in our C++ code, we can simply i
 
 We can now start to define common structs, etc. In this case, we need to create a new struct 'MyVertex' that can be pushed to the GPU. Our basic vertices will have a position and color attribute.
 
-```cpp
+```diff lang="cpp"
+// src/shader/shared.inl
++#pragma once
++
++// Includes the Daxa API to the shader
++#include <daxa/daxa.inl>
++#include <daxa/utils/task_graph.inl>
++
++struct MyVertex
++{
++    daxa_f32vec3 position;
++    daxa_f32vec3 color;
++};
+```
+
+Below this, we have to allow the shader to use pointers to our newly created struct.
+
+```diff lang="cpp"
+// src/shader/shared.inl
 struct MyVertex
 {
     daxa_f32vec3 position;
     daxa_f32vec3 color;
 };
-```
 
-Below this, we have to allow the shader to use pointers to our newly created struct.
-
-```cpp
-DAXA_DECL_BUFFER_PTR(MyVertex)
++// Allows the shader to use pointers to MyVertex
++DAXA_DECL_BUFFER_PTR(MyVertex)
 ```
 
 The last step is to create the push constant. The push constant struct needs the attribute 'daxa_BufferPtr' that points to another struct object.
 
-```cpp
-struct MyPushConstant
-{
-    daxa_BufferPtr(MyVertex) vertices;
-};
+```diff lang="cpp"
+// src/shader/shared.inl
+DAXA_DECL_BUFFER_PTR(MyVertex)
+
++struct MyPushConstant
++{
++    daxa_BufferPtr(MyVertex) vertices;
++};
 ```
 
 To use this file in our main.cpp, we need to include it at the top: `#include "shader/shared.inl"`
@@ -45,6 +66,7 @@ To use this file in our main.cpp, we need to include it at the top: `#include "s
 ## Final code
 
 ```cpp
+// src/shader/shared.inl
 #pragma once
 
 // Includes the Daxa API to the shader

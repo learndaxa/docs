@@ -13,6 +13,7 @@ To create a buffer, we simply need the device the memory should be allocated on 
 To allocate the data needed for our triangle vertex data we can simply create a new buffer:
 
 ```cpp
+// src/main.cpp
 auto buffer_id = device.create_buffer({
     .size = sizeof(MyVertex) * 3,
     .name = "my vertex data",
@@ -23,12 +24,18 @@ auto buffer_id = device.create_buffer({
 
 To upload to a buffer in daxa, you query the buffer's host pointer. Not all buffers have a host pointer, make sure to set either `daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE` or `daxa::MemoryFlagBits::HOST_ACCESS_RANDOM` as `.memory_flags` when creating the buffer:
 
-```cpp
-auto buffer_id = device.create_buffer({
-    .size = sizeof(MyVertex) * 3,
-    .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE,
-    .name = "my vertex data",
-});
+```diff lang="cpp"
+// src/main.cpp
+        pipeline = result.value();
+    }
+
++    auto buffer_id = device.create_buffer({
++        .size = sizeof(MyVertex) * 3,
++        .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE,
++        .name = "my vertex data",
++    });
+
+    while (!window.should_close())
 ```
 
 * Use `daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE` for buffers that require fast reads on the gpu and host writes. This type is suboptimal for host readback. Its typically in device vram.
@@ -36,9 +43,24 @@ auto buffer_id = device.create_buffer({
 
 Uploading any data itself is then done via direct writes through the host address:
 
-```cpp
-MyVertex * vert_buf_ptr = device.buffer_host_address_as<MyVertex>(buffer_id).value();
-vert_buf_ptr[0] = {.position = {-0.5f, +0.5f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}};
-vert_buf_ptr[1] = {.position = {+0.5f, +0.5f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}};
-vert_buf_ptr[2] = {.position = {+0.0f, -0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}};
+```diff lang="cpp"
+// src/main.cpp
+    auto buffer_id = device.create_buffer({
+        .size = sizeof(MyVertex) * 3,
+        .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE,
+        .name = "my vertex data",
+    });
+
++    MyVertex * vert_buf_ptr = device.buffer_host_address_as<MyVertex>(buffer_id).value();
++    vert_buf_ptr[0] = {.position = {-0.5f, +0.5f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}};
++    vert_buf_ptr[1] = {.position = {+0.5f, +0.5f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}};
++    vert_buf_ptr[2] = {.position = {+0.0f, -0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}};
+
+    while (!window.should_close())
 ```
+
+This direct host-pointer upload is fine for a handful of vertices written once at startup. For larger or per-frame uploads, a staging buffer plus a GPU-side copy is more appropriate.
+
+:::tip[Learn more]
+See [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/#buffers) for the full resource model (bindless IDs, object lifetimes, deferred destruction), and [Buffer/Texture Upload & Mipmaps](/wiki/buffer-texture-upload-and-mipmaps/) for staging-buffer uploads of larger data.
+:::
