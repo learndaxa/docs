@@ -1,3 +1,8 @@
+/* Widen the main content column (Starlight default is 45rem). */
+:root {
+  --sl-content-width: 65rem;
+}
+
 /* Dark mode colors. */
 :root {
   --sl-color-accent-low: #271f35;
