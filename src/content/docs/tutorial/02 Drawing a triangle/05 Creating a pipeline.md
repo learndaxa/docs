@@ -15,31 +15,28 @@ We have to provide the pipeline manager with the device we want to use, our shad
 ```cpp
 auto pipeline_manager = daxa::PipelineManager({
     .device = device,
-    .shader_compile_options = {
-        .root_paths = {
-            DAXA_SHADER_INCLUDE_DIR,
-            "./src/shader",
-        },
-        .language = daxa::ShaderLanguage::GLSL,
-        .enable_debug_info = true,
+    .root_paths = {
+        DAXA_SHADER_INCLUDE_DIR,
+        "./src/shader",
     },
+    .default_language = daxa::ShaderLanguage::GLSL,
+    .default_enable_debug_info = true,
     .name = "my pipeline manager",
 });
 ```
 
 ## Rasterization Pipeline
 
-We now can create our first pipeline. For a rasterization pipeline, we need to provide the shaders we want to use, the color attachments (Similar to the [OpenGL g-buffers](https://learnopengl.com/Advanced-Lighting/Deferred-Shading)) and the size of our push constant (We will explain this in the next section).
+We now can create our first pipeline. For a rasterization pipeline, we need to provide the shaders we want to use, the color attachments (Similar to the [OpenGL g-buffers](https://learnopengl.com/Advanced-Lighting/Deferred-Shading)) and rasterizer settings.
 
 ```cpp
 std::shared_ptr<daxa::RasterPipeline> pipeline;
 {
-    auto result = pipeline_manager.add_raster_pipeline({
-        .vertex_shader_info = daxa::ShaderCompileInfo{.source = daxa::ShaderFile{"main.glsl"}},
-        .fragment_shader_info = daxa::ShaderCompileInfo{.source = daxa::ShaderFile{"main.glsl"}},
+    auto result = pipeline_manager.add_raster_pipeline2({
+        .vertex_shader_info = daxa::ShaderCompileInfo2{.source = daxa::ShaderFile{"main.glsl"}},
+        .fragment_shader_info = daxa::ShaderCompileInfo2{.source = daxa::ShaderFile{"main.glsl"}},
         .color_attachments = {{.format = swapchain.get_format()}},
         .raster = {},
-        .push_constant_size = sizeof(MyPushConstant),
         .name = "my pipeline",
     });
     if (result.is_err())
@@ -50,3 +47,5 @@ std::shared_ptr<daxa::RasterPipeline> pipeline;
     pipeline = result.value();
 }
 ```
+
+Note that we don't need to specify `.push_constant_size` here - it defaults to `DAXA_MAX_PUSH_CONSTANT_BYTE_SIZE`, which is large enough for our `MyPushConstant` struct. You can set it explicitly if you want to constrain it.

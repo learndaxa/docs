@@ -6,27 +6,103 @@ slug: "tutorial/drawing-a-triangle/finishing-up"
 
 ## Implementing the main loop
 
+Each frame we need to:
+
+1. Handle a possible window resize by resizing the swapchain.
+2. Acquire the next swapchain image. If acquisition fails (e.g. the window was minimized), skip the frame.
+3. Record commands: transition the swapchain image to `GENERAL`, run our render pass (clear + draw the triangle), then transition the image to `PRESENT_SRC`.
+4. Submit the commands and present the frame.
+5. Let the device reclaim any resources that are no longer in use.
+
 ```cpp
-while (!window.should_close()){
+while (!window.should_close())
+{
     window.update();
 
-    if (window.swapchain_out_of_date){
+    if (window.swapchain_out_of_date)
+    {
         swapchain.resize();
         window.swapchain_out_of_date = false;
     }
 
-    // acquire the next image
-    auto swapchain_image = swapchain.acquire_next_image();
+    // acquire_next_image will wait until a frame in flight is available, then attempt to acquire a new swapchain image.
+    // If the acquisition fails, it will return a null image id (is_empty() -> true).
+    daxa::ImageId swapchain_image = swapchain.acquire_next_image();
     if (swapchain_image.is_empty())
     {
         continue;
     }
 
-    // We update the image id of the task swapchain image.
-    task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
+    // Record and submit frame gpu commands
+    {
+        daxa::CommandRecorder recorder = device.create_command_recorder({.name = "Main Loop Cmd Recorder"});
 
-    // So, now all we need to do is execute our task graph!
-    loop_task_graph.execute({});
+        daxa::ImageInfo swapchain_image_info = device.image_info(swapchain_image).value();
+
+        // Daxa uses image layout GENERAL for all access, so there is generally no need
+        // for image layout barriers in daxa. There are only two transitions that must
+        // still be done explicitly:
+        // * initialization of an image before its first usage via daxa::ImageLayoutOperation::TO_GENERAL
+        // * conversion to a presentable format via daxa::ImageLayoutOperation::TO_PRESENT_SRC
+        recorder.pipeline_image_barrier({
+            .dst_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
+            .image = swapchain_image,
+            .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
+        });
+
+        // When starting a render pass via a rasterization pipeline, the cmd recorder type is changed to daxa::RenderCommandRecorder.
+        // Only the RenderCommandRecorder can record raster commands, and only commands valid within a render pass.
+        daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
+            .color_attachments = std::array{
+                daxa::RenderAttachmentInfo{
+                    .image_view = swapchain_image.default_view(),
+                    .load_op = daxa::AttachmentLoadOp::CLEAR,
+                    .clear_value = std::array<daxa::f32, 4>{0.1f, 0.0f, 0.5f, 1.0f},
+                },
+            },
+            .render_area = {.width = swapchain_image_info.size.x, .height = swapchain_image_info.size.y},
+        });
+
+        render_recorder.set_pipeline(*pipeline);
+
+        // The only way to send data to a shader in daxa is via push constants.
+        // Here, we send the buffer pointer to the vertices to the gpu via a push constant.
+        render_recorder.push_constant(MyPushConstant{.vertices = device.device_address(buffer_id).value()});
+
+        render_recorder.draw({.vertex_count = 3});
+
+        // VERY IMPORTANT! A renderpass must be ended after finishing!
+        // The ending of a render pass returns back the original command recorder.
+        recorder = std::move(render_recorder).end_renderpass();
+
+        recorder.pipeline_image_barrier({
+            .src_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
+            .image = swapchain_image,
+            .layout_operation = daxa::ImageLayoutOperation::TO_PRESENT_SRC,
+        });
+
+        daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
+
+        // There are a few usage rules around the swapchain images in vulkan and daxa:
+        // * all submitted commands that access an acquired swapchain image MUST wait on the current acquire semaphore
+        // * the last submitted commands accessing the swapchain image to be presented MUST signal the current present semaphore
+        // * the last submitted commands accessing the swapchain image MUST signal the current timeline pair
+        // * the present MUST wait on the current present semaphore
+        device.submit_commands({
+            .command_lists = std::array{cmd_list},
+            .wait_binary_semaphores = std::array{swapchain.current_acquire_semaphore()},
+            .signal_binary_semaphores = std::array{swapchain.current_present_semaphore()},
+            .signal_timeline_semaphores = std::array{swapchain.current_timeline_pair()},
+        });
+
+        device.present_frame({
+            .wait_binary_semaphores = std::array{swapchain.current_present_semaphore()},
+            .swapchain = swapchain,
+        });
+    }
+
+    // The device performs all memory reclaiming in the collect_garbage call.
+    // It's best to call it once at the end of each frame.
     device.collect_garbage();
 }
 ```
@@ -65,71 +141,7 @@ THE APPLICATION MUST USE THE REPO ROOT DIRECTORY FOR THE SHADER RELATIVE PATHS T
 #include "shader/shared.inl"
 
 #include <daxa/utils/pipeline_manager.hpp>
-#include <daxa/utils/task_graph.hpp>
-
-void upload_vertex_data_task(daxa::TaskGraph & tg, daxa::TaskBufferView vertices)
-{
-    tg.add_task({
-        .attachments = {
-            daxa::inl_attachment(daxa::TaskBufferAccess::TRANSFER_WRITE, vertices),
-        },
-        .task = [=](daxa::TaskInterface ti)
-        {
-            auto data = std::array{
-                MyVertex{.position = {-0.5f, +0.5f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}},
-                MyVertex{.position = {+0.5f, +0.5f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}},
-                MyVertex{.position = {+0.0f, -0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}},
-            };
-            auto staging_buffer_id = ti.device.create_buffer({
-                .size = sizeof(data),
-                .allocate_info = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
-                .name = "my staging buffer",
-            });
-            ti.recorder.destroy_buffer_deferred(staging_buffer_id);
-            auto * buffer_ptr = ti.device.buffer_host_address_as<std::array<MyVertex, 3>>(staging_buffer_id).value();
-            *buffer_ptr = data;
-            ti.recorder.copy_buffer_to_buffer({
-                .src_buffer = staging_buffer_id,
-                .dst_buffer = ti.get(vertices).ids[0],
-                .size = sizeof(data),
-            });
-        },
-        .name = "upload vertices",
-    });
-}
-
-void draw_vertices_task(daxa::TaskGraph & tg, std::shared_ptr<daxa::RasterPipeline> pipeline, daxa::TaskBufferView vertices, daxa::TaskImageView render_target)
-{
-    tg.add_task({
-        .attachments = {
-            daxa::inl_attachment(daxa::TaskBufferAccess::VERTEX_SHADER_READ, vertices),
-            daxa::inl_attachment(daxa::TaskImageAccess::COLOR_ATTACHMENT, daxa::ImageViewType::REGULAR_2D, render_target),
-        },
-        .task = [=](daxa::TaskInterface ti)
-        {
-            auto const size = ti.device.info(ti.get(render_target).ids[0]).value().size;
-
-            daxa::RenderCommandRecorder render_recorder = std::move(ti.recorder).begin_renderpass({
-                .color_attachments = std::array{
-                    daxa::RenderAttachmentInfo{
-                        .image_view = ti.get(render_target).view_ids[0],
-                        .load_op = daxa::AttachmentLoadOp::CLEAR,
-                        .clear_value = std::array<daxa::f32, 4>{0.1f, 0.0f, 0.5f, 1.0f},
-                    },
-                },
-                .render_area = {.width = size.x, .height = size.y},
-            });
-
-            render_recorder.set_pipeline(*pipeline);
-            render_recorder.push_constant(MyPushConstant{
-                .my_vertex_ptr = ti.device.device_address(ti.get(vertices).ids[0]).value(),
-            });
-            render_recorder.draw({.vertex_count = 3});
-            ti.recorder = std::move(render_recorder).end_renderpass();
-        },
-        .name = "draw vertices",
-    });
-}
+#include <iostream>
 
 int main(int argc, char const *argv[])
 {
@@ -141,8 +153,10 @@ int main(int argc, char const *argv[])
     daxa::Device device = instance.create_device_2(instance.choose_device({}, {}));
 
     daxa::Swapchain swapchain = device.create_swapchain({
-        .native_window = window.get_native_handle(),
-        .native_window_platform = window.get_native_platform(),
+        .native_window_info = window.get_native_window_info(),
+        .surface_format = device.choose_swapchain_surface_format({
+            .native_window_info = window.get_native_window_info(),
+        }),
         .present_mode = daxa::PresentMode::FIFO,
         .image_usage = daxa::ImageUsageFlagBits::TRANSFER_DST,
         .name = "my swapchain",
@@ -150,25 +164,22 @@ int main(int argc, char const *argv[])
 
     auto pipeline_manager = daxa::PipelineManager({
         .device = device,
-        .shader_compile_options = {
-            .root_paths = {
-                DAXA_SHADER_INCLUDE_DIR,
-                "./src/shader",
-            },
-            .language = daxa::ShaderLanguage::GLSL,
-            .enable_debug_info = true,
+        .root_paths = {
+            DAXA_SHADER_INCLUDE_DIR,
+            "./src/shader",
         },
+        .default_language = daxa::ShaderLanguage::GLSL,
+        .default_enable_debug_info = true,
         .name = "my pipeline manager",
     });
 
     std::shared_ptr<daxa::RasterPipeline> pipeline;
     {
-        auto result = pipeline_manager.add_raster_pipeline({
-            .vertex_shader_info = daxa::ShaderCompileInfo{.source = daxa::ShaderFile{"main.glsl"}},
-            .fragment_shader_info = daxa::ShaderCompileInfo{.source = daxa::ShaderFile{"main.glsl"}},
+        auto result = pipeline_manager.add_raster_pipeline2({
+            .vertex_shader_info = daxa::ShaderCompileInfo2{.source = daxa::ShaderFile{"main.glsl"}},
+            .fragment_shader_info = daxa::ShaderCompileInfo2{.source = daxa::ShaderFile{"main.glsl"}},
             .color_attachments = {{.format = swapchain.get_format()}},
             .raster = {},
-            .push_constant_size = sizeof(MyPushConstant),
             .name = "my pipeline",
         });
         if (result.is_err())
@@ -179,68 +190,87 @@ int main(int argc, char const *argv[])
         pipeline = result.value();
     }
 
+    // Allocate the vertex buffer in host-visible vram and upload the triangle data directly.
     auto buffer_id = device.create_buffer({
         .size = sizeof(MyVertex) * 3,
+        .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE,
         .name = "my vertex data",
     });
 
-    auto task_swapchain_image = daxa::TaskImage{{.swapchain_image = true, .name = "swapchain image"}};
-    auto task_vertex_buffer = daxa::TaskBuffer({
-        .initial_buffers = {.buffers = std::span{&buffer_id, 1}},
-        .name = "task vertex buffer",
-    });
+    MyVertex * vert_buf_ptr = device.buffer_host_address_as<MyVertex>(buffer_id).value();
+    vert_buf_ptr[0] = {.position = {-0.5f, +0.5f, 0.0f}, .color = {1.0f, 0.0f, 0.0f}};
+    vert_buf_ptr[1] = {.position = {+0.5f, +0.5f, 0.0f}, .color = {0.0f, 1.0f, 0.0f}};
+    vert_buf_ptr[2] = {.position = {+0.0f, -0.5f, 0.0f}, .color = {0.0f, 0.0f, 1.0f}};
 
-    auto loop_task_graph = daxa::TaskGraph({
-        .device = device,
-        .swapchain = swapchain,
-        .name = "loop",
-    });
-    loop_task_graph.use_persistent_buffer(task_vertex_buffer);
-    loop_task_graph.use_persistent_image(task_swapchain_image);
-    draw_vertices_task(loop_task_graph, pipeline, task_vertex_buffer, task_swapchain_image);
-
-    loop_task_graph.submit({});
-    // And tell the task graph to do the present step.
-    loop_task_graph.present({});
-    // Finally, we complete the task graph, which essentially compiles the
-    // dependency graph between tasks, and inserts the most optimal synchronization!
-    loop_task_graph.complete({});
-
+    while (!window.should_close())
     {
-        auto upload_task_graph = daxa::TaskGraph({
-            .device = device,
-            .name = "upload",
-        });
-
-        upload_task_graph.use_persistent_buffer(task_vertex_buffer);
-
-        upload_vertex_data_task(upload_task_graph, task_vertex_buffer);
-
-        upload_task_graph.submit({});
-        upload_task_graph.complete({});
-        upload_task_graph.execute({});
-    }
-
-    while (!window.should_close()){
         window.update();
 
-        if (window.swapchain_out_of_date){
+        if (window.swapchain_out_of_date)
+        {
             swapchain.resize();
             window.swapchain_out_of_date = false;
         }
 
-        // acquire the next image
-        auto swapchain_image = swapchain.acquire_next_image();
+        // acquire_next_image will wait until a frame in flight is available, then attempt to acquire a new swapchain image.
+        // If the acquisition fails, it will return a null image id (is_empty() -> true).
+        daxa::ImageId swapchain_image = swapchain.acquire_next_image();
         if (swapchain_image.is_empty())
         {
             continue;
         }
 
-        // We update the image id of the task swapchain image.
-        task_swapchain_image.set_images({.images = std::span{&swapchain_image, 1}});
+        // Record and submit frame gpu commands
+        {
+            daxa::CommandRecorder recorder = device.create_command_recorder({.name = "Main Loop Cmd Recorder"});
 
-        // So, now all we need to do is execute our task graph!
-        loop_task_graph.execute({});
+            daxa::ImageInfo swapchain_image_info = device.image_info(swapchain_image).value();
+
+            recorder.pipeline_image_barrier({
+                .dst_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
+                .image = swapchain_image,
+                .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
+            });
+
+            daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
+                .color_attachments = std::array{
+                    daxa::RenderAttachmentInfo{
+                        .image_view = swapchain_image.default_view(),
+                        .load_op = daxa::AttachmentLoadOp::CLEAR,
+                        .clear_value = std::array<daxa::f32, 4>{0.1f, 0.0f, 0.5f, 1.0f},
+                    },
+                },
+                .render_area = {.width = swapchain_image_info.size.x, .height = swapchain_image_info.size.y},
+            });
+
+            render_recorder.set_pipeline(*pipeline);
+            render_recorder.push_constant(MyPushConstant{.vertices = device.device_address(buffer_id).value()});
+            render_recorder.draw({.vertex_count = 3});
+
+            // VERY IMPORTANT! A renderpass must be ended after finishing!
+            recorder = std::move(render_recorder).end_renderpass();
+
+            recorder.pipeline_image_barrier({
+                .src_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
+                .image = swapchain_image,
+                .layout_operation = daxa::ImageLayoutOperation::TO_PRESENT_SRC,
+            });
+
+            daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
+
+            device.submit_commands({
+                .command_lists = std::array{cmd_list},
+                .wait_binary_semaphores = std::array{swapchain.current_acquire_semaphore()},
+                .signal_binary_semaphores = std::array{swapchain.current_present_semaphore()},
+                .signal_timeline_semaphores = std::array{swapchain.current_timeline_pair()},
+            });
+
+            device.present_frame({
+                .wait_binary_semaphores = std::array{swapchain.current_present_semaphore()},
+                .swapchain = swapchain,
+            });
+        }
+
         device.collect_garbage();
     }
 
@@ -266,7 +296,7 @@ using namespace daxa::types;
 #define GLFW_EXPOSE_NATIVE_WIN32
 #define GLFW_NATIVE_INCLUDE_NONE
 using HWND = void *;
-#elif defined(__linux__) /
+#elif defined(__linux__)
 #define GLFW_EXPOSE_NATIVE_X11
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #endif
@@ -308,27 +338,25 @@ struct AppWindow {
         glfwTerminate();
     }
 
-    auto get_native_handle() const -> daxa::NativeWindowHandle {
+    auto get_native_window_info() const -> daxa::NativeWindowInfo {
 #if defined(_WIN32)
-        return glfwGetWin32Window(glfw_window_ptr);
+        return daxa::NativeWindowInfoWin32{glfwGetWin32Window(glfw_window_ptr)};
 #elif defined(__linux__)
-        switch (get_native_platform()) {
-        case daxa::NativeWindowPlatform::WAYLAND_API:
-            return reinterpret_cast<daxa::NativeWindowHandle>(glfwGetWaylandWindow(glfw_window_ptr));
-        case daxa::NativeWindowPlatform::XLIB_API:
+        switch (glfwGetPlatform()) {
+        case GLFW_PLATFORM_WAYLAND:
+            return daxa::NativeWindowInfoWayland{
+                .display = glfwGetWaylandDisplay(),
+                .surface = glfwGetWaylandWindow(glfw_window_ptr),
+                .width = width,
+                .height = height,
+            };
+        case GLFW_PLATFORM_X11:
         default:
-            return reinterpret_cast<daxa::NativeWindowHandle>(glfwGetX11Window(glfw_window_ptr));
+            return daxa::NativeWindowInfoXlib{
+                .window = reinterpret_cast<void *>(glfwGetX11Window(glfw_window_ptr))
+            };
         }
 #endif
-    }
-
-    static auto get_native_platform() -> daxa::NativeWindowPlatform {
-        switch (glfwGetPlatform()) {
-        case GLFW_PLATFORM_WIN32: return daxa::NativeWindowPlatform::WIN32_API;
-        case GLFW_PLATFORM_X11: return daxa::NativeWindowPlatform::XLIB_API;
-        case GLFW_PLATFORM_WAYLAND: return daxa::NativeWindowPlatform::WAYLAND_API;
-        default: return daxa::NativeWindowPlatform::UNKNOWN;
-        }
     }
 
     inline void set_mouse_capture(bool should_capture) const {
@@ -349,19 +377,17 @@ struct AppWindow {
     inline GLFWwindow *get_glfw_window() const {
         return glfw_window_ptr;
     }
-
-    inline bool should_close() {
-        return glfwWindowShouldClose(glfw_window_ptr);
-    }
 };
 ```
 
 ```cpp
-// src/shaders/shared.inl
+// src/shader/shared.inl
 
 #pragma once
 
+// Includes the Daxa API to the shader
 #include <daxa/daxa.inl>
+#include <daxa/utils/task_graph.inl>
 
 struct MyVertex
 {
@@ -369,22 +395,20 @@ struct MyVertex
     daxa_f32vec3 color;
 };
 
+// Allows the shader to use pointers to MyVertex
 DAXA_DECL_BUFFER_PTR(MyVertex)
 
 struct MyPushConstant
 {
-    daxa_BufferPtr(MyVertex) my_vertex_ptr;
+    daxa_BufferPtr(MyVertex) vertices;
 };
 ```
 
 ```cpp
-// src/shaders/main.glsl
+// src/shader/main.glsl
 
 // Includes the daxa shader API
 #include <daxa/daxa.inl>
-
-// Enabled the extension GL_EXT_debug_printf
-#extension GL_EXT_debug_printf : enable
 
 // Includes our shared types we created earlier
 #include <shared.inl>
@@ -398,7 +422,8 @@ DAXA_DECL_PUSH_CONSTANT(MyPushConstant, push)
 layout(location = 0) out daxa_f32vec3 v_col;
 void main()
 {
-    MyVertex vert = deref(push.my_vertex_ptr[gl_VertexIndex]);
+    // Daxa provides convenience functions to deref the i'th element for each buffer ptr:
+    MyVertex vert = deref_i(push.vertices, gl_VertexIndex);
     gl_Position = daxa_f32vec4(vert.position, 1);
     v_col = vert.color;
 }
@@ -410,10 +435,6 @@ layout(location = 0) out daxa_f32vec4 color;
 void main()
 {
     color = daxa_f32vec4(v_col, 1);
-
-    // Debug printf is not necessary, we just use it here to show how it can be used.
-    // To be able to see the debug printf output, you need to open Vulkan Configurator and enable it there.
-    debugPrintfEXT("test\n");
 }
 
 #endif

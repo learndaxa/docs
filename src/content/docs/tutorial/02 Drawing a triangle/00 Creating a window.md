@@ -168,26 +168,33 @@ The destructor ensures proper cleanup of GLFW resources to avoid memory leaks or
 
 </details>
 
-## 5. Native Handles and Platform Identification
+## 5. Native Window Info
 
-To interface with platform-specific window systems (e.g., Windows' HWND or Linux's X11/Wayland), expose methods to retrieve native handles and identify the platform.
+To interface with platform-specific window systems (e.g., Windows' HWND or Linux's X11/Wayland), expose a method that returns Daxa's `NativeWindowInfo`.
 
-### Native Handle Retrieval
+### Native Window Info Retrieval
 
-This function returns a native window handle compatible with Daxa's `NativeWindowHandle` type.
+`daxa::NativeWindowInfo` is a variant (`daxa::Variant<NativeWindowInfoWin32, NativeWindowInfoXlib, NativeWindowInfoWayland>`) that bundles whatever Daxa needs to create a swapchain for the current platform. This function builds the right variant at runtime.
 
 ```cpp
 // window.hpp
-auto get_native_handle() const -> daxa::NativeWindowHandle {
+auto get_native_window_info() const -> daxa::NativeWindowInfo {
 #if defined(_WIN32)
-    return glfwGetWin32Window(glfw_window_ptr);
+    return daxa::NativeWindowInfoWin32{glfwGetWin32Window(glfw_window_ptr)};
 #elif defined(__linux__)
-    switch (get_native_platform()) {
-        case daxa::NativeWindowPlatform::WAYLAND_API:
-            return reinterpret_cast<daxa::NativeWindowHandle>(glfwGetWaylandWindow(glfw_window_ptr));
-        case daxa::NativeWindowPlatform::XLIB_API:
+    switch (glfwGetPlatform()) {
+        case GLFW_PLATFORM_WAYLAND:
+            return daxa::NativeWindowInfoWayland{
+                .display = glfwGetWaylandDisplay(),
+                .surface = glfwGetWaylandWindow(glfw_window_ptr),
+                .width = width,
+                .height = height,
+            };
+        case GLFW_PLATFORM_X11:
         default:
-            return reinterpret_cast<daxa::NativeWindowHandle>(glfwGetX11Window(glfw_window_ptr));
+            return daxa::NativeWindowInfoXlib{
+                .window = reinterpret_cast<void *>(glfwGetX11Window(glfw_window_ptr))
+            };
     }
 #endif
 }
@@ -197,34 +204,12 @@ auto get_native_handle() const -> daxa::NativeWindowHandle {
 <summary>Key Notes</summary>
 
 1. **Platform-Specific Retrieval**:
-    - On Windows, `glfwGetWin32Window()` retrieves an `HWND` handle.
-    - On Linux, either `glfwGetX11Window()` or `glfwGetWaylandWindow()` is used, depending on the platform.
+    - On Windows, `glfwGetWin32Window()` retrieves an `HWND` handle, which is wrapped in `daxa::NativeWindowInfoWin32`.
+    - On Linux, `glfwGetPlatform()` is checked at runtime to decide between `daxa::NativeWindowInfoXlib` (X11) and `daxa::NativeWindowInfoWayland` (Wayland).
 
-2. `daxa::NativeWindowHandle`: A Daxa-specific abstraction for handling different windowing systems. By returning this type, the function ensures compatibility with Daxa's rendering APIs.
+2. `daxa::NativeWindowInfo`: Replaces the older separate "handle" and "platform" concepts with a single variant. It is passed directly to `device.create_swapchain()` and `device.choose_swapchain_surface_format()`.
 
-</details>
-
-### Platform Identification
-
-This static function identifies the native platform and maps it to Daxa's NativeWindowPlatform enumeration.
-
-```cpp
-// window.hpp
-static auto get_native_platform() -> daxa::NativeWindowPlatform {
-    switch (glfwGetPlatform()) {
-        case GLFW_PLATFORM_WIN32: return daxa::NativeWindowPlatform::WIN32_API;
-        case GLFW_PLATFORM_X11: return daxa::NativeWindowPlatform::XLIB_API;
-        case GLFW_PLATFORM_WAYLAND: return daxa::NativeWindowPlatform::WAYLAND_API;
-        default: return daxa::NativeWindowPlatform::UNKNOWN;
-    }
-}
-```
-
-<details>
-<summary>Key Notes</summary>
-
-1. `glfwGetPlatform()`: Returns the current platform (e.g., Win32, X11, Wayland).
-2. ***Mapping to `daxa::NativeWindowPlatform`**: Provides an abstraction layer to decouple GLFW-specific platform identifiers from Daxa's API.
+3. The Wayland variant additionally needs the window's `width` and `height`, which is why `AppWindow` keeps track of them as members.
 
 </details>
 

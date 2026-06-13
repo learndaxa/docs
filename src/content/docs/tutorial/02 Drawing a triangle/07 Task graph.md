@@ -4,6 +4,10 @@ description: Task graph
 slug: "tutorial/drawing-a-triangle/task-graph"
 ---
 
+:::note[Optional / Advanced]
+TaskGraph is an optional Daxa utility that automatically synchronizes GPU work for you. The basic triangle built in this tutorial does **not** require it - the code in [Finishing up](/tutorial/drawing-a-triangle/finishing-up/) records commands directly instead. This page is kept as an introduction to TaskGraph for when your project grows more complex. The TaskGraph API evolves quickly, so for the most up-to-date usage, check `tests/2_daxa_api/6_task_graph` in the [Daxa repository](https://github.com/Ipotrick/Daxa).
+:::
+
 ## Description
 
 While not entirely necessary, we're going to use TaskGraph, which allows us to compile a list of GPU tasks and their dependencies into a synchronized set of commands. This simplifies your code by making different tasks completely self-contained, while also generating the most optimal synchronization for the tasks you describe. To use TaskGraph, as its also an optional feature, add the include path `<daxa/utils/task_graph.hpp>` at the top of our main file.
@@ -23,7 +27,7 @@ daxa::Task task = daxa::RasterTask("draw task")
     // * access = reads_writes,
     // * view_type = REGULAR_2D,
     // * task_image_view =  render_target
-    .color_attachments.reads_writes(daxa::ImageViewType::REGULAR_2D, render_target) 
+    .color_attachment.reads_writes(daxa::ImageViewType::REGULAR_2D, render_target) 
     .executes([=](daxa::TaskInterface ti){
         // this callback is executed later when executing the graph after completing recording.
         ....

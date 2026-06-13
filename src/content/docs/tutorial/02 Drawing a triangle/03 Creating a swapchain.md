@@ -8,34 +8,27 @@ slug: "tutorial/drawing-a-triangle/creating-a-swapchain"
 
 In Daxa, the swapchain is a key element in rendering graphics, acting as a bridge between your application and the display. It's a collection of buffers used for displaying images on the screen. Unlike other/older APIs, Vulkan requires explicit management of these, which Daxa luckily handles for you.
 
-The following code sample creates a new swapchain using a native window handle and a native window platform. Both of these values are supposed to be supplied by your windowing library of choice.
+The following code sample creates a new swapchain using a `daxa::NativeWindowInfo`, which is supplied by your windowing library of choice via the `AppWindow::get_native_window_info()` helper we created earlier.
 
 ```cpp
 daxa::Swapchain swapchain = device.create_swapchain({
-    // this handle is given by the windowing API
-    .native_window = native_window_handle,
-    // The platform would also be retrieved from the windowing API,
-    // or by hard-coding it depending on the OS.
-    .native_window_platform = native_window_platform,
-    // Here we can supply a user-defined surface format selection
-    // function, to rate formats. If you don't care what format the
-    // swapchain images are in, then you can just omit this argument
-    // because it defaults to `daxa::default_format_score(...)`
-    .surface_format_selector = [](daxa::Format format)
-    {
-        switch (format)
-        {
-        case daxa::Format::R8G8B8A8_UINT: return 100;
-        default: return daxa::default_format_score(format);
-        }
-    },
-    .present_mode = daxa::PresentMode::MAILBOX,
+    // this info is given by the windowing API
+    .native_window_info = window.get_native_window_info(),
+    // We ask the device to pick a surface format for us. If you don't
+    // care what format the swapchain images are in, you can just pass
+    // the native window info and let Daxa pick a sensible default.
+    // Optionally, `preferred_formats` can be supplied to influence
+    // the selection.
+    .surface_format = device.choose_swapchain_surface_format({
+        .native_window_info = window.get_native_window_info(),
+    }),
+    .present_mode = daxa::PresentMode::FIFO,
     .image_usage = daxa::ImageUsageFlagBits::TRANSFER_DST,
     .name = "my swapchain",
 });
 ```
 
-In the sample code, the native window handle can be obtained by 2 of the helper-functions we created `AppWindow::get_native_handle()` and `AppWindow::get_native_platform()`
+`device.choose_swapchain_surface_format()` returns a `daxa::SurfaceFormat`, which simply pairs a `daxa::Format` with a `daxa::ColorSpace`. If you have a strong preference for a particular format, you can pass a list of `preferred_formats` (ordered from most to least preferred) and Daxa will pick the first one supported by the surface, falling back to a sensible default otherwise.
 
 ### daxa::PresentMode
 
@@ -73,8 +66,10 @@ int main(int argc, char const *argv[])
     daxa::Device device = instance.create_device_2(instance.choose_device({}, {}));
 
     daxa::Swapchain swapchain = device.create_swapchain({
-        .native_window = window.get_native_handle(),
-        .native_window_platform = window.get_native_platform(),
+        .native_window_info = window.get_native_window_info(),
+        .surface_format = device.choose_swapchain_surface_format({
+            .native_window_info = window.get_native_window_info(),
+        }),
         .present_mode = daxa::PresentMode::FIFO,
         .image_usage = daxa::ImageUsageFlagBits::TRANSFER_DST,
         .name = "my swapchain",
