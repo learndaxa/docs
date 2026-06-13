@@ -29,20 +29,23 @@ When prompted in VS Code, select the "Debug" preset for optimal setup.
 
 ### Notes on Daxa
 
-Daxa leverages **CMake** for project configuration and **Vcpkg** for dependency management. Familiarity with these tools will help you navigate and customize your setup effectively.
+Daxa leverages **CMake** for project configuration. Dependencies - including Daxa itself - are fetched and built using CMake's [FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html) module, declared in `cmake/deps.cmake`. There's no separate package manager to install or configure; a working CMake + Ninja/MSVC/Clang setup and the Vulkan SDK are all you need.
 
 :::note
-If you're new to CMake or Vcpkg, refer to their official documentation:
+If you're new to CMake, refer to its official documentation:
 
 - [CMake Documentation](https://cmake.org/documentation/)
-- [Vcpkg Documentation](https://vcpkg.io/en/index.html)
+- [FetchContent Documentation](https://cmake.org/cmake/help/latest/module/FetchContent.html)
 
+:::
+
+:::tip[Learn more]
+See [Building](/wiki/building/) for how Daxa's own `CMakePresets.json`/`cmake/deps.cmake` work, the `DAXA_ENABLE_UTILS_*` options that control which optional utilities (TaskGraph, Pipeline Manager, Dear ImGui, ...) get built, and how to pull Daxa into a CMake project of your own.
 :::
 
 ### Directory Structure
 
 <FileTree>
-- vcpkg.json
 - CMakePresets.json
 - CMakeLists.txt
 - .gitignore

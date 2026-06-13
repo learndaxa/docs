@@ -6,7 +6,7 @@ slug: "tutorial/drawing-a-triangle/creating-a-pipeline-and-shader"
 
 ## Pipeline manager
 
-In this tutorial, we will be using the pipeline manager, which is an additional Daxa feature that has to be explicitly imported with the header `<daxa/utils/pipeline_manager.hpp>` and also has to be enabled in our Vcpkg manifest. Both of these steps are already done in the sample code.
+In this tutorial, we will be using the pipeline manager, which is an additional Daxa feature that has to be explicitly imported with the header `<daxa/utils/pipeline_manager.hpp>` and also has to be enabled via Daxa's `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_GLSLANG` (or `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SLANG`) CMake option. Both of these steps are already done in the sample code.
 
 A pipeline manager compiles shader source (with hot-reloading and `#include` tracking) and constructs the underlying `daxa::RasterPipeline`/`daxa::ComputePipeline` objects for us - it's a development convenience layered on top of `device.create_raster_pipeline(...)` / `device.create_compute_pipeline(...)`.
 

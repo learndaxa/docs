@@ -150,6 +150,71 @@ daxa::TlasId tlas = device.create_tlas({
 
 Building the actual acceleration structure contents happens later via build commands on a `daxa::CommandRecorder` (see [Command Recording & Submission](/wiki/command-recording/)). Once built, a TLAS is bound for tracing via [Pipelines & Renderpasses: Ray Tracing Pipelines](/wiki/pipelines-and-renderpasses/#ray-tracing-pipelines).
 
+## Memory Blocks: Manual Suballocation & Aliasing
+
+`create_buffer`/`create_image`/`create_tlas` each give their resource its own dedicated chunk of GPU memory, sized and freed automatically alongside the resource. This is the right default, but sometimes you want more control over the underlying memory than one-allocation-per-resource gives you:
+
+- **Aliasing**: two resources that are never alive/used on the GPU at the same time can share the exact same physical memory, cutting your total memory footprint.
+- **Custom suballocation**: allocate one big block of memory up front, then hand out byte ranges of it yourself - e.g. a bump allocator for many short-lived buffers, or your own pool allocator - without per-resource allocation overhead.
+
+A `daxa::MemoryBlock` is a raw allocation of device memory that a buffer, image, or TLAS can be created "into" at a given byte `offset`, instead of getting its own allocation.
+
+### Querying memory requirements
+
+Before creating a `MemoryBlock`, find out how big and how aligned a resource's backing memory needs to be with `device.memory_requirements(...)` (an overload resolving to `buffer_memory_requirements`/`image_memory_requirements` based on the info type passed):
+
+```cpp
+daxa::MemoryRequirements requirements = device.memory_requirements(daxa::BufferInfo{
+    .size = sizeof(MyData),
+});
+```
+
+This returns a `daxa::MemoryRequirements`:
+
+```cpp
+struct MemoryRequirements
+{
+    u64 size;
+    u64 alignment;
+    u32 memory_type_bits;
+};
+```
+
+If multiple resources will live in the same block, combine their requirements: take the maximum `size`/`alignment` needed and the bitwise AND of `memory_type_bits`, since the block's memory type must be compatible with everything allocated from it.
+
+### Creating a memory block and allocating into it
+
+```cpp
+daxa::MemoryBlock memory_block = device.create_memory({
+    .requirements = requirements,
+    .flags = {}, // same daxa::MemoryFlagBits as buffers - e.g. HOST_ACCESS_RANDOM for a CPU-visible block
+});
+
+daxa::BufferId buffer_a = device.create_buffer_from_memory_block({
+    .buffer_info = {.size = sizeof(MyData), .name = "buffer a"},
+    .memory_block = memory_block,
+    .offset = 0,
+});
+
+daxa::ImageId image_a = device.create_image_from_memory_block({
+    .image_info = {/* ... */ .name = "image a"},
+    .memory_block = memory_block,
+    .offset = some_aligned_offset,
+});
+```
+
+`create_tlas_from_memory_block` works the same way for acceleration structures. Resources created this way are destroyed normally with `destroy_buffer`/`destroy_image`/`destroy_tlas` - this releases their view into the block, not the block's memory itself. `MemoryBlock` is a regular reference-counted object (not an SRO); its memory is freed once the last reference to it goes out of scope.
+
+### Aliasing memory between resources
+
+Since `offset` is yours to choose, two resources can be given *overlapping* ranges of the same `MemoryBlock`, causing them to alias the same physical memory. This is safe only if you guarantee their GPU lifetimes/usages never overlap (one is fully done being read/written before the other's first use) - the driver doesn't know the two resources share memory, so no synchronization between them is inserted automatically; you are fully responsible for it.
+
+> [TaskGraph](/wiki/taskgraph/) uses exactly this mechanism for transient resources: it computes each transient resource's lifetime, determines which ones never overlap, allocates a single `MemoryBlock` sized for the worst-case overlap, and creates each transient buffer/image via `create_buffer_from_memory_block`/`create_image_from_memory_block` at a computed offset - all the barriers needed around the aliasing are inserted for you. This is where most of TaskGraph's memory savings over a naive per-resource allocation come from.
+
+### Building your own suballocator
+
+`MemoryBlock` is also useful independent of aliasing: allocate one large block up front (e.g. a few hundred MB) and hand out sub-ranges of it yourself via `create_buffer_from_memory_block`/`create_image_from_memory_block` at increasing offsets - a simple bump allocator - or via your own free-list/pool allocator for resources that come and go over time. This trades per-resource allocation overhead for manual bookkeeping of offsets, alignment, and lifetimes. Combine with [Synchronization: Building Your Own Deferred Destruction](/wiki/synchronization/#building-your-own-deferred-destruction) to know when a sub-range is safe to hand out to a new resource.
+
 ## Querying, Validating & Destroying Objects
 
 Every SRO's info can be queried back from the device. Because SROs aren't reference counted, info is returned by value to avoid race conditions:

@@ -140,13 +140,20 @@ You have now completed the Daxa tutorial! If you now run the code, you should ha
 Running the code with the VSCode debugger should be as simple as pressing the debug button, though you may need to create a launch.json if the working directory is wrong.
 
 Otherwise, you can manually run the CMake commands to configure, build, and then run the executable directly like so:
-```
+
+```shell
 cmake --preset=Debug
 cmake --build build/Debug
-./build/Debug/learndaxa.exe
+./build/Debug/learndaxa  # learndaxa.exe on Windows
 ```
 
-THE APPLICATION MUST USE THE REPO ROOT DIRECTORY FOR THE SHADER RELATIVE PATHS TO WORK PROPERLY
+:::caution
+The application must be **run from the repo root directory** - shader paths (`./src/shader`) and the include path passed via `DAXA_SHADER_INCLUDE_DIR` are resolved relative to the current working directory, not the executable's location. If your shaders fail to load, check your working directory first (e.g. in a VS Code `launch.json`).
+:::
+
+:::tip[Learn more]
+See [Building](/wiki/building/) for what the `cl-x86_64-windows-msvc`/`gcc-x86_64-linux-gnu`-style presets used by Daxa itself look like, and how the `DAXA_ENABLE_UTILS_*` CMake options (used here to enable the pipeline manager and TaskGraph) work if you want to enable additional utilities like Dear ImGui in your own project.
+:::
 
 ## Final Code
 

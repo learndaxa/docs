@@ -145,7 +145,7 @@ if (auto _ = std::get_if<daxa::PipelineReloadSuccess>(&reloaded_result))
 
 If we were to modify our `main.glsl` shader file while this application was running, the pipeline manager would automatically recompile `compute_pipeline` for us, with no developer intervention. This is extremely useful for iteration times since you can change your shaders as much as you like while the application runs. If the shader fails to compile, then the pipeline will not be modified and thus will continue to use the old _working_ version.
 
-Now is a good time to mention the Daxa shader files, which you can and should #include in your shaders for ease of development. These are in the Daxa include directory, but this can be hard to find when using Daxa as a vcpkg dependency. To remedy this, the Daxa CMake package provides a C++ #define which has the full path to the Daxa include directory: `DAXA_SHADER_INCLUDE_DIR`. We can add this to our `.root_paths` to allow us to `#include` the Daxa headers in our shaders.
+Now is a good time to mention the Daxa shader files, which you can and should #include in your shaders for ease of development. These are in the Daxa include directory, but this can be hard to find when Daxa is pulled in as a CMake dependency (e.g. via `FetchContent` or as a git submodule). To remedy this, Daxa's CMake target provides a C++ #define which has the full path to the Daxa include directory: `DAXA_SHADER_INCLUDE_DIR`. We can add this to our `.root_paths` to allow us to `#include` the Daxa headers in our shaders.
 
 ```cpp
 .root_paths = {
