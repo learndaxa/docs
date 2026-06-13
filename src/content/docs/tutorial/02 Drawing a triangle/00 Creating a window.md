@@ -106,32 +106,39 @@ In this step, you'll define the **constructor** to initialize the window, config
 
 The constructor initializes the GLFW window, sets its properties, and registers callbacks for resizing events.
 
-```cpp
+```diff lang="cpp"
 // window.hpp
-explicit AppWindow(char const* window_name, u32 sx = 800, u32 sy = 600) 
-    : width{sx}, height{sy} {
-    glfwInit(); // Initialize GLFW
+struct AppWindow {
+    GLFWwindow* glfw_window_ptr;
+    u32 width, height;
+    bool minimized = false;
+    bool swapchain_out_of_date = false;
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // No graphics API
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);    // Make the window resizable
-
-    // Create the GLFW window
-    glfw_window_ptr = glfwCreateWindow(
-        static_cast<i32>(width), static_cast<i32>(height), 
-        window_name, nullptr, nullptr
-    );
-
-    // Associate the AppWindow object with the GLFW window
-    glfwSetWindowUserPointer(glfw_window_ptr, this);
-
-    // Set a callback to handle resizing events
-    glfwSetWindowSizeCallback(glfw_window_ptr, [](GLFWwindow* window, int size_x, int size_y) {
-        auto* win = static_cast<AppWindow*>(glfwGetWindowUserPointer(window));
-        win->width = static_cast<u32>(size_x);
-        win->height = static_cast<u32>(size_y);
-        win->swapchain_out_of_date = true;
-    });
-}
++    explicit AppWindow(char const* window_name, u32 sx = 800, u32 sy = 600)
++        : width{sx}, height{sy} {
++        glfwInit(); // Initialize GLFW
++
++        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // No graphics API
++        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);    // Make the window resizable
++
++        // Create the GLFW window
++        glfw_window_ptr = glfwCreateWindow(
++            static_cast<i32>(width), static_cast<i32>(height),
++            window_name, nullptr, nullptr
++        );
++
++        // Associate the AppWindow object with the GLFW window
++        glfwSetWindowUserPointer(glfw_window_ptr, this);
++
++        // Set a callback to handle resizing events
++        glfwSetWindowSizeCallback(glfw_window_ptr, [](GLFWwindow* window, int size_x, int size_y) {
++            auto* win = static_cast<AppWindow*>(glfwGetWindowUserPointer(window));
++            win->width = static_cast<u32>(size_x);
++            win->height = static_cast<u32>(size_y);
++            win->swapchain_out_of_date = true;
++        });
++    }
+};
 ```
 
 <details>
@@ -152,12 +159,16 @@ This callback is crucial for Vulkan-based rendering. Resizing a window invalidat
 
 The destructor ensures proper cleanup of GLFW resources to avoid memory leaks or dangling pointers.
 
-```cpp
+```diff lang="cpp"
 // window.hpp
-~AppWindow() {
-    glfwDestroyWindow(glfw_window_ptr); // Destroy the GLFW window
-    glfwTerminate();                    // Terminate GLFW
-}
+        });
+    }
+
++    ~AppWindow() {
++        glfwDestroyWindow(glfw_window_ptr); // Destroy the GLFW window
++        glfwTerminate();                    // Terminate GLFW
++    }
+};
 ```
 
 <details>
@@ -176,28 +187,34 @@ To interface with platform-specific window systems (e.g., Windows' HWND or Linux
 
 `daxa::NativeWindowInfo` is a variant (`daxa::Variant<NativeWindowInfoWin32, NativeWindowInfoXlib, NativeWindowInfoWayland>`) that bundles whatever Daxa needs to create a swapchain for the current platform. This function builds the right variant at runtime.
 
-```cpp
+```diff lang="cpp"
 // window.hpp
-auto get_native_window_info() const -> daxa::NativeWindowInfo {
-#if defined(_WIN32)
-    return daxa::NativeWindowInfoWin32{glfwGetWin32Window(glfw_window_ptr)};
-#elif defined(__linux__)
-    switch (glfwGetPlatform()) {
-        case GLFW_PLATFORM_WAYLAND:
-            return daxa::NativeWindowInfoWayland{
-                .display = glfwGetWaylandDisplay(),
-                .surface = glfwGetWaylandWindow(glfw_window_ptr),
-                .width = width,
-                .height = height,
-            };
-        case GLFW_PLATFORM_X11:
-        default:
-            return daxa::NativeWindowInfoXlib{
-                .window = reinterpret_cast<void *>(glfwGetX11Window(glfw_window_ptr))
-            };
+    ~AppWindow() {
+        glfwDestroyWindow(glfw_window_ptr);
+        glfwTerminate();
     }
-#endif
-}
+
++    auto get_native_window_info() const -> daxa::NativeWindowInfo {
++#if defined(_WIN32)
++        return daxa::NativeWindowInfoWin32{glfwGetWin32Window(glfw_window_ptr)};
++#elif defined(__linux__)
++        switch (glfwGetPlatform()) {
++        case GLFW_PLATFORM_WAYLAND:
++            return daxa::NativeWindowInfoWayland{
++                .display = glfwGetWaylandDisplay(),
++                .surface = glfwGetWaylandWindow(glfw_window_ptr),
++                .width = width,
++                .height = height,
++            };
++        case GLFW_PLATFORM_X11:
++        default:
++            return daxa::NativeWindowInfoXlib{
++                .window = reinterpret_cast<void *>(glfwGetX11Window(glfw_window_ptr))
++            };
++        }
++#endif
++    }
+};
 ```
 
 <details>
@@ -219,26 +236,31 @@ auto get_native_window_info() const -> daxa::NativeWindowInfo {
 
 To simplify window management, implement utility methods for common tasks like mouse control, checking if the window should close, and handling updates.
 
-```cpp
+```diff lang="cpp"
 // window.hpp
-inline void set_mouse_capture(bool should_capture) const {
-    glfwSetCursorPos(glfw_window_ptr, static_cast<f64>(width / 2.), static_cast<f64>(height / 2.));
-    glfwSetInputMode(glfw_window_ptr, GLFW_CURSOR, should_capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-    glfwSetInputMode(glfw_window_ptr, GLFW_RAW_MOUSE_MOTION, should_capture);
-}
+        }
+#endif
+    }
 
-inline bool should_close() const {
-    return glfwWindowShouldClose(glfw_window_ptr);
-}
-
-inline void update() const {
-    glfwPollEvents();
-    glfwSwapBuffers(glfw_window_ptr);
-}
-
-inline GLFWwindow* get_glfw_window() const {
-    return glfw_window_ptr;
-}
++    inline void set_mouse_capture(bool should_capture) const {
++        glfwSetCursorPos(glfw_window_ptr, static_cast<f64>(width / 2.), static_cast<f64>(height / 2.));
++        glfwSetInputMode(glfw_window_ptr, GLFW_CURSOR, should_capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
++        glfwSetInputMode(glfw_window_ptr, GLFW_RAW_MOUSE_MOTION, should_capture);
++    }
++
++    inline bool should_close() const {
++        return glfwWindowShouldClose(glfw_window_ptr);
++    }
++
++    inline void update() const {
++        glfwPollEvents();
++        glfwSwapBuffers(glfw_window_ptr);
++    }
++
++    inline GLFWwindow* get_glfw_window() const {
++        return glfw_window_ptr;
++    }
+};
 ```
 
 <details>

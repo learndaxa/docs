@@ -12,12 +12,17 @@ To create a buffer, we simply need the device the memory should be allocated on 
 
 To allocate the data needed for our triangle vertex data we can simply create a new buffer:
 
-```cpp
+```diff lang="cpp"
 // src/main.cpp
-auto buffer_id = device.create_buffer({
-    .size = sizeof(MyVertex) * 3,
-    .name = "my vertex data",
-});
+        pipeline = result.value();
+    }
+
++    auto buffer_id = device.create_buffer({
++        .size = sizeof(MyVertex) * 3,
++        .name = "my vertex data",
++    });
+
+    while (!window.should_close())
 ```
 
 ## Uploading to Buffers
@@ -29,11 +34,11 @@ To upload to a buffer in daxa, you query the buffer's host pointer. Not all buff
         pipeline = result.value();
     }
 
-+    auto buffer_id = device.create_buffer({
-+        .size = sizeof(MyVertex) * 3,
+    auto buffer_id = device.create_buffer({
+        .size = sizeof(MyVertex) * 3,
 +        .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE,
-+        .name = "my vertex data",
-+    });
+        .name = "my vertex data",
+    });
 
     while (!window.should_close())
 ```
