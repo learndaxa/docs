@@ -1,315 +1,342 @@
 ---
-title: Shader Integration
-description: Shader Integration
+title: Shader Integration & Bindless
+description: Sharing types between C++ and shaders, push constants, and bindless access to images and buffers
 slug: wiki/shader-integration
 ---
 
 ## Description
 
-One of Daxa's goals is to make shader development easier.
+Shader integration - sharing types between C++ and shaders, and giving shaders convenient, low-overhead access to resources - is one of the most neglected areas of GPU library design. Most engines either hand-write matching structs on both sides and hope the layouts stay in sync, or wrap every resource access behind heavyweight descriptor set/binding management that the user has to maintain by hand.
 
-Daxa achieves this in multiple ways, for example, the bindless integration on the CPU and GPU side. But as a basis for this, Daxa also provides tools for easy code sharing between shaders and C++.
+Daxa does both of these well, and it is one of its biggest strengths:
 
-The details on code sharing and general shader integration will be described on this page.
+- **Code sharing**: structs, constants, and even larger pieces of logic can be written **once**, in a file included by both C++ and shader code, and just work in both.
+- **Bindless**: buffers, images, and samplers are referenced in shaders directly via the same ids/addresses the CPU gets back from `device.create_*` - no descriptor sets, no manual binding, no separate "shader-side" resource model to maintain.
 
-## C++/Shader Code Sharing
+This page covers both: the `daxa_` type macros that make code sharing possible, push constants as the way to get that shared data onto the GPU, and how to use bindless image and buffer handles once they're there.
 
-The primary motivation behind code sharing is defining things like structs stored in buffers a single time and then seamlessly using them in C++ and shaders. This concept extends to other parts of the API as well. For example, TaskGraph uses lists that can be declared in shared files to reduce code duplication.
+This page builds on [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures) and [Command Recording & Submission](/wiki/command-recording).
 
-Code is shared by creating header files included in C++ and Glsl. Any shared files must include the <daxa/daxa.inl> header. This file contains variations of macros switched based on the compiled language. The code sharing in Daxa relies on the shared Glsl and C++ preprocessor translating Daxa's macros to the correct type per language.
+## Code Sharing via `daxa_` Types
 
-The macros in <daxa/daxa.inl> are mainly primitive data types, Daxa structs, and helper utilities.
-
-An example of a Daxa shared file:
+Shared files are plain headers included from both C++ and shader code. They must include `<daxa/daxa.inl>`, which detects the compiling language and redefines Daxa's `daxa_*` type macros accordingly:
 
 ```c
+// shared.inl
 #include <daxa/daxa.inl>
 
-struct MyStruct
+struct MyData
 {
-    daxa_u32vec2 my_vec;
+    daxa_u32vec2 size;
+    daxa_f32vec3 color;
 };
 ```
 
-daxa_u32 in this struct is a macro defined by daxa. This macro is translated to uvec2 in Glsl, uint2 in Hlsl, or daxa::types::f32vec2 in C++.
+The same `MyData` definition is valid in a C++ translation unit, a `.glsl` shader, and a `.slang` shader. Each `daxa_*` macro expands to the matching native type for whichever language is currently compiling:
 
-The complete list of defined data types in Daxa can be found in the `daxa.inl` file.
+| Daxa macro | GLSL | Slang | C++ |
+|---|---|---|---|
+| `daxa_b32` | `bool` | `bool` | `daxa::b32` |
+| `daxa_u32` | `uint` | `uint32_t` | `daxa::u32` |
+| `daxa_i32` | `int` | `int32_t` | `daxa::i32` |
+| `daxa_f32` | `float` | `float` | `daxa::f32` |
+| `daxa_u32vec2` | `uvec2` | `uint2` | `daxa::u32vec2` |
+| `daxa_f32vec3` | `vec3` | `float3` | `daxa::f32vec3` |
+| `daxa_f32mat4x4` | `mat4x4` | `float4x4` | `daxa::f32mat4x4` |
+| `daxa_BufferId` | `{ uint64_t value; }` | `daxa::BufferId` | `daxa_BufferId` |
+| `daxa_ImageViewId` | `{ uint64_t value; }` | `daxa::ImageViewId` | `daxa_ImageViewId` |
+| `daxa_SamplerId` | `{ uint64_t value; }` | `daxa::SamplerId` | `daxa_SamplerId` |
 
-Daxa always declares the alignment of buffer references to be in a scalar block layout. This layout causes shared structs containing daxa\_ types to have the alignment rules C++ and Glsl. This means that the C++ and Glsl versions of the struct will be compatible. You need not worry about padding or alignment behavior with the usual Glsl format layouts like std140 or std430.
+The full list of available types lives in `daxa.inl`, `daxa.glsl`, and `daxa.slang`.
 
-## Shader Constants
+All Daxa buffer references and push constants use **scalar block layout**, which gives `daxa_*` types in shaders the exact same size, alignment, and padding rules as their C++ counterparts. This means a struct made of `daxa_*` types has an **identical memory layout** in C++ and in shader code - no manual padding, no `std140`/`std430` surprises, and no risk of the CPU and GPU silently disagreeing about a struct's layout.
 
-For the shared structs to work correctly in other situations, Daxa also provides some utility macros to make it easier to write shaders. Please use these macros instead of making your own Glsl push constants and uniform buffer declarations, as Daxa may change the required layout specifiers later. Not using the Daxa-provided macros may break your code in the future.
+## Push Constants
 
-As Daxa does not expose descriptor sets, there are only two ways to directly present data to the shader: push constants and uniform buffer bindings.
+Daxa intentionally exposes no descriptor sets to the user. Aside from buffers, **push constants** are the only way to get data onto the GPU, and they are the entry point for everything else: image ids, buffer pointers, and small per-dispatch/per-draw parameters all travel through a single shared push constant struct.
 
-### Push Constants
-
-`DAXA_DECL_PUSH_CONSTANT(STRUCT, NAME)` takes a struct and declares a push constant with the given name in the global scope.
-
-This can **only** be used within `.glsl` files, as it generates Glsl code.
-
-Example:
+`DAXA_DECL_PUSH_CONSTANT(STRUCT, NAME)` declares a global variable `NAME` of type `STRUCT` as the shader's push constant block. It is GLSL-only (it expands to a `layout(push_constant, ...) uniform` block), but the `STRUCT` itself is defined once in a shared file and reused by both C++ and the shader:
 
 ```c
-struct Push
+// shared.inl
+struct MyPush
 {
-    daxa_u32 field;
+    daxa_u32vec2 size;
+    daxa_f32 time;
 };
+```
 
-DAXA_DECL_PUSH_CONSTANT(Push, push)
+```glsl
+// main.glsl
+#include <daxa/daxa.inl>
+#include "shared.inl"
 
-layout(local_size_x = 1)
+DAXA_DECL_PUSH_CONSTANT(MyPush, push)
+
 void main()
 {
-    uint value = push.field;
+    daxa_u32vec2 size = push.size;
+    daxa_f32 time = push.time;
 }
 ```
 
-## Bindless Shader Integration
+```cpp
+// main.cpp
+recorder.push_constant(MyPush{
+    .size = {1024, 1024},
+    .time = elapsed_time,
+});
+```
 
-In order to make bindless work seamlessly within shaders, Daxa needs to provide Glsl and Hlsl headers that define abstractions for shaders to conveniently access the SROs bindlessly.
+Because `MyPush` is defined once and shared, there is no manual offset/size bookkeeping - the C++ struct you fill in is bit-for-bit the struct the shader reads.
 
-The headers provided by Daxa include shader types for the SRO ids: `daxa_BufferId`, `daxa_ImageViewId` and `daxa_SamplerId` in Glsl and `daxa::BufferId`, `daxa::ImageViewId` and `daxa::SamplerId` in Hlsl. They also define functions to use these IDs within shaders.
-As everything in the provided headers is implemented with either macros or standard Glsl or Hlsl syntax, this all works out of the box without the need for any language extensions or custom compilers.
+## Bindless Access: Images & Buffers
+
+The same push constant mechanism is how bindless resources reach the shader: an image id or a buffer's device address is just another field in the shared struct.
 
 ### Images
 
-All images are created with internal default image views. In fact, their IDs can be trivially converted to an image view ID:
+Every image has an implicit default view covering its full extent (`image_id.default_view()`), so the common case needs only a `daxa_ImageViewId`:
+
+```c
+// shared.inl
+struct DrawPush
+{
+    daxa_ImageViewId texture;
+    daxa_SamplerId sampler;
+};
+```
 
 ```cpp
-daxa::ImageId image_id = device.create_image({...});
-daxa::ImageViewId image_view_id = image_id.default_view();
+// main.cpp
+recorder.push_constant(DrawPush{
+    .texture = texture_image.default_view(),
+    .sampler = sampler_id,
+});
 ```
 
-This default view covers the full mip and layer dimensions of the image.
-This can significantly reduce boilerplate, as for most images, only the default view is necessary for all uses.
-
-> Daxa only supports separate images and samplers, so no combined image samplers. This simplifies the API and allows for more consistent HLSL support.
-
-> Daxa uses general image layout for everyhing, the storage and sampled bindless descriptors for each image both assume general layout. This allows for simultaneous access of images as storage and sampled. 
-
-### Image Access in Glsl
-
-The shader access works by transforming a `daxa_ImageViewId` with or without a `daxa_SamplerId` into a Glsl `texture`, `image`, or `sampler` locally.
-
-Examples of transforming image and sampler IDs into glsl objects locally:
+**GLSL** turns a `daxa_ImageViewId` (optionally with a `daxa_SamplerId`) into a `texture`/`image`/`sampler` object in place, via macros from `<daxa/daxa.glsl>`:
 
 ```glsl
-#include <daxa/daxa.glsl>
-...
-daxa_ImageViewId img = ...;
-daxa_SamplerId smp = ...;
-ivec4 v = texture(daxa_isampler3D(img,smp), vec3(...));
+#include <daxa/daxa.inl>
+#include "shared.inl"
 
-daxa_ImageViewId img2 = ...;
-imageStore(daxa_image2D(img2), ivec2(...), vec4(...));
+DAXA_DECL_PUSH_CONSTANT(DrawPush, push)
 
-daxa_ImageViewId img3 = ...;
-uvec2 size = textureSize(daxa_texture1DArray(img3));
-...
+void main()
+{
+    vec4 color = texture(daxa_sampler2D(push.texture, push.sampler), uv);
+    imageStore(daxa_image2D(push.texture), pixel, color);
+}
 ```
 
-> Note that they can not be treated as local variables and can only be used IN PLACE of the usage, as shown below. You CAN, however, pass the IDs as value types to functions structs and buffers!
+**Slang** does the same via `Texture*::Get(id)`, direct table indexing, or `.get()` on a typed id - and unlike GLSL, the result can be stored in a local variable:
 
-> Daxa default enables many glsl extensions like [GL_EXT_samplerless_texture_functions](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GL_EXT_samplerless_texture_functions.txt). It is worth to check those out as they can be a bit unknown but handy.
+```cpp
+#include <daxa/daxa.slang>
+#include "shared.inl"
 
-### Glsl Annotations For Images
+[[vk::push_constant]] DrawPush push;
 
-In glsl, it is possible to annotate image variables with custom [qualifiers](<https://www.khronos.org/opengl/wiki/Type_Qualifier_(Glsl)>) and [image formats](<https://www.khronos.org/opengl/wiki/Layout_Qualifier_(Glsl)>). Such annotations can be: `coherent` or `readonly` and `r32ui` or `rgba16f`.
-Custom qualifiers are really useful and can provide better performance and more possibilities in some cases. Image formats, on the other hand, are sometimes required by some glsl functions (`imageAtomicOr` for example).
+void main()
+{
+    Texture2D<float4> tex = Texture2D<float4>::Get(push.texture);
+    SamplerState smp = push.sampler.get();
+    float4 color = tex.Sample(smp, uv);
+}
+```
 
-To provide the image accessor macros, Daxa pre-defines image tables without any annotations. These make the access macros such as `daxa_image2D` possible to use.
+> GLSL handles **cannot** be stored in local variables - the `daxa_*` access macros must be used directly at the point of use (you can still pass the *ids* around freely, just not the resulting GLSL objects).
 
-Pre-defining all possible permutations of qualifiers for all image types would be thousands of LOC, destroying compile times. Because of this, Daxa only pre-defines the tables used in the macros without qualifiers.
+Slang additionally provides **typed** id/index wrappers for every texture dimension: `daxa::Texture2DId<float4>`, `daxa::RWTexture2DId<float4>`, `daxa::Texture2DIndex<float4>`, and so on, for every `TextureX`/`RWTextureX` Slang type. These wrap a plain `daxa::ImageViewId`/`daxa::ImageViewIndex` but carry the texel type as well, so `.get()`/`.get_coherent()` returns an already-typed `Texture2D<float4>` directly - no need to repeat the type via `Texture2D<float4>::Get(id)`. They're most useful in Slang-only structs where you want the texture's type to be part of the struct definition itself, rather than just an untyped `daxa_ImageViewId`.
 
-To still provide a nice way to gain access to Daxa image views with the benefits of the annotations, Daxa tries to offer the middle ground by allowing the user to declare new accessors for images with annotations when needed.
-These custom accessors declare a new table with these annotations. Each user-defined accessor must have a unique `ACCESSOR_NAME`. This name is used to identify the accessor when using it with `daxa_access(ACCESSOR_NAME, image_view_id)`.
+### Buffers
+
+A buffer's GPU-side address is retrieved on the CPU with `device.device_address(buffer_id).value()` and sent to the shader as a typed pointer using `daxa_BufferPtr`/`daxa_RWBufferPtr`:
+
+```c
+// shared.inl
+struct MyData
+{
+    daxa_f32vec3 position;
+};
+DAXA_DECL_BUFFER_PTR(MyData)
+
+struct ComputePush
+{
+    daxa_BufferPtr(MyData) data;
+};
+```
+
+```cpp
+// main.cpp
+recorder.push_constant(ComputePush{
+    .data = device.device_address(data_buffer).value(),
+});
+```
+
+`daxa_BufferPtr(MyData)` expands per language: a read-only buffer reference in GLSL, a `Ptr<MyData>` in Slang, and a plain `daxa::types::DeviceAddress` (a `u64`) in C++ - so it fits directly into a shared struct. `DAXA_DECL_BUFFER_PTR(MyData)` (needed in GLSL to declare the underlying buffer reference types) expands to nothing in C++ and Slang.
+
+Reading through the pointer uses `deref(...)` in both GLSL and Slang:
 
 ```glsl
-DAXA_DECL_IMAGE_ACCESSOR(TYPE, ANNOTATIONS, ACCESSOR_NAME) // Declares new accessor.
-DAXA_DECL_IMAGE_ACCESSOR_WITH_FORMAT(TYPE, FORMAT, ANNOTATIONS, ACCESSOR_NAME) // Declares new accessor with format
-daxa_access(ACCESSOR_NAME, image_view_id) // Uses the accessor by name to convert an image view id to the given glsl type.
+// GLSL
+daxa_f32vec3 pos = deref(push.data).position;
+deref(push.data).position = vec3(1, 0, 0);
 ```
 
-Example:
+```cpp
+// Slang
+float3 pos = deref(push.data).position;
+deref(push.data).position = float3(1, 0, 0);
+```
+
+For a read-write pointer, declare the field as `daxa_RWBufferPtr(MyData)` instead. If you only have a `daxa_BufferId` in the shader (e.g. passed as part of a larger bindless array) and need its address, `daxa_id_to_address(buffer_id)` returns the raw `daxa_u64` address, which can be cast to a `daxa_BufferPtr(T)`.
+
+### Pointer-Based Shared Data Structure Example
+
+`daxa_BufferPtr(T)`/`daxa_RWBufferPtr(T)` fields aren't limited to push constants - they are just regular `daxa_u64`-sized values, so they can appear in **any** shared struct, including one that itself lives behind another pointer. This lets you build a small tree of pointers: the push constant holds a single pointer to a "root" struct, and that struct's fields are themselves pointers into other buffers.
+
+This is the standard way to give a shader access to an entire scene/object's data through one push constant field:
+
+```c
+// shared.inl
+struct Vertex
+{
+    daxa_f32vec3 position;
+    daxa_f32vec3 normal;
+};
+DAXA_DECL_BUFFER_PTR(Vertex)
+
+struct Material
+{
+    daxa_ImageViewId albedo;
+    daxa_ImageViewId normal_map;
+    daxa_SamplerId sampler;
+};
+DAXA_DECL_BUFFER_PTR_ALIGN(Material, 8)
+
+struct Mesh
+{
+    daxa_BufferPtr(Vertex) vertices;
+    daxa_BufferPtr(Material) material;
+    daxa_u32 vertex_count;
+    daxa_f32mat4x4 transform;
+};
+DAXA_DECL_BUFFER_PTR_ALIGN(Mesh, 8)
+
+struct DrawPush
+{
+    daxa_BufferPtr(Mesh) mesh;
+};
+```
+
+Note that `Material` contains plain `daxa_ImageViewId`/`daxa_SamplerId` fields - image and sampler ids are themselves just `daxa_u64` values, so they're as freely embeddable in shared structs as any other `daxa_*` type.
+
+`DAXA_DECL_BUFFER_PTR(T)` declares its buffer reference with the default alignment of 4. Under scalar block layout, a struct's required alignment is the alignment of its largest member - so any struct containing an 8-byte-aligned field (`daxa_BufferPtr`/`daxa_RWBufferPtr`, `daxa_ImageViewId`, `daxa_SamplerId`, `daxa_u64`/`daxa_i64`, `daxa_f64`, ...) must use `DAXA_DECL_BUFFER_PTR_ALIGN(T, 8)` instead. `Vertex` only contains 4-byte-aligned `float`s, so the default `DAXA_DECL_BUFFER_PTR(Vertex)` is fine; `Material` and `Mesh` both contain 8-byte ids/pointers and need the explicit `, 8` alignment. Getting this wrong causes the GLSL and C++ layouts of the struct to diverge.
+
+On the C++ side, `Mesh::vertices` and `Mesh::material` are just `daxa::types::DeviceAddress` values - filled in exactly like any other buffer pointer, by writing the addresses of the vertex and material buffers into the `Mesh` struct wherever it lives (a dedicated buffer, or an allocation from a [reusable staging buffer](/wiki/buffer-texture-upload-and-mipmaps#transfermemorypool-a-ready-made-reusable-staging-buffer)):
+
+```cpp
+// main.cpp
+Material material_data{
+    .albedo = albedo_image.default_view(),
+    .normal_map = normal_image.default_view(),
+    .sampler = sampler_id,
+};
+// ... write material_data into material_buffer ...
+
+Mesh mesh_data{
+    .vertices = device.device_address(vertex_buffer).value(),
+    .material = device.device_address(material_buffer).value(),
+    .vertex_count = vertex_count,
+    .transform = transform,
+};
+// ... write mesh_data into mesh_buffer, e.g. via a host-mapped pointer ...
+
+recorder.push_constant(DrawPush{
+    .mesh = device.device_address(mesh_buffer).value(),
+});
+```
+
+The shader follows the chain of pointers - the push constant's pointer to the `Mesh`, then the `Mesh`'s pointers to its vertices and material:
+
+```glsl
+// GLSL
+Mesh mesh = deref(push.mesh);
+Vertex v = deref_i(mesh.vertices, gl_VertexIndex);
+
+Material mat = deref(mesh.material);
+vec4 albedo = texture(daxa_sampler2D(mat.albedo, mat.sampler), uv);
+```
+
+```cpp
+// Slang
+Mesh mesh = deref(push.mesh);
+Vertex v = deref_i(mesh.vertices, vertex_index);
+
+Material mat = deref(mesh.material);
+float4 albedo = Texture2D<float4>::Get(mat.albedo).Sample(mat.sampler.get(), uv);
+```
+
+Nothing about this is special-cased - it's the same `deref`/`deref_i` macros used everywhere else, applied one pointer at a time. This is how larger, more dynamic data (entire scenes, draw lists, material tables, ...) is passed to shaders with a single push constant field, instead of growing the push constant struct itself.
+
+### Slang Typed Image Handles Example
+
+If a struct like `Material` is only ever used from Slang (never shared with GLSL), the typed handles from the previous section let you skip the untyped `daxa_ImageViewId` + `Texture2D<float4>::Get(...)` pair entirely:
+
+```cpp
+// Slang-only variant of Material
+struct MaterialSlang
+{
+    daxa::Texture2DId<float4> albedo;
+    daxa::Texture2DId<float4> normal_map;
+    daxa::SamplerId sampler;
+};
+
+void main()
+{
+    MaterialSlang mat = ...;
+    float4 albedo = mat.albedo.get().Sample(mat.sampler.get(), uv);
+}
+```
+
+`daxa::Texture2DId<float4>` is purely a Slang-side typing convenience - it's a thin wrapper holding a single `daxa::ImageViewId` field (`.id`), with the exact same `daxa_u64` size and layout. On the CPU there is no typed equivalent, it decays to the usual types: a buffer read as `MaterialSlang` in Slang is filled from C++ exactly like the untyped `Material` struct, with plain `daxa::ImageViewId`/`daxa::SamplerId` values from `image.default_view()` and the sampler id - the same bytes, just given a more specific type on the Slang side.
+
+## GLSL Annotations for Images
+
+The `daxa_image2D(id)`-style macros give you an image with no qualifiers (no `coherent`, `readonly`, `restrict`, format, ...). Pre-declaring every possible combination would explode compile times, so instead Daxa lets you declare your own annotated accessors on demand:
 
 ```glsl
 DAXA_DECL_IMAGE_ACCESSOR(image2D, coherent restrict, RWCoherRestr)
 DAXA_DECL_IMAGE_ACCESSOR(iimage2DArray, writeonly restrict, WORestr)
-DAXA_DECL_IMAGE_ACCESSOR_WITH_FORMAT(uimage2D, r32ui, , r32uiImage)
-...
-void main() {
+DAXA_DECL_IMAGE_ACCESSOR_WITH_FORMAT(uimage2D, r32ui, , R32uiImage)
+
+void main()
+{
     daxa_ImageViewId img0, img1, img2 = ...;
-    vec4 v = imageLoad(daxa_access(3WCoherRestr, img0), ivec2(0,0));
-    imageStore(daxa_access(WORestr, img1), ivec2(0,0), 0, ivec4(v));
-    imageAtomicOr(daxa_access(r32uiImage, img2), ivec2(0,0), 1 << 31);
+
+    vec4 v = imageLoad(daxa_access(RWCoherRestr, img0), ivec2(0, 0));
+    imageStore(daxa_access(WORestr, img1), ivec2(0, 0), ivec4(v));
+    imageAtomicOr(daxa_access(R32uiImage, img2), ivec2(0, 0), 1 << 31);
 }
 ```
 
-### Image Access in Slang
+- `DAXA_DECL_IMAGE_ACCESSOR(TYPE, ANNOTATIONS, ACCESSOR_NAME)` declares a new table of `TYPE` images with the given qualifiers.
+- `DAXA_DECL_IMAGE_ACCESSOR_WITH_FORMAT(TYPE, FORMAT, ANNOTATIONS, ACCESSOR_NAME)` additionally pins a storage format (needed for some functions, e.g. `imageAtomicOr`).
+- `daxa_access(ACCESSOR_NAME, image_view_id)` indexes into that table with an image view id, giving you the annotated image object.
 
-To get access to images in Slang, you create a local Slang texture object in the shader from the image ID.
+Each `ACCESSOR_NAME` must be unique; declare it once per qualifier/format combination you actually need.
 
-To get a texture handle with slang you call the static get function:
-```cpp
-// (RW)Texture(DIM)<T>::Get(index_or_id)
-// Example:
-Texture2D<float4> tex = Texture2D<float4>::Get(id_or_index);
-```
-Every Slang texture type has this function.
+## Always-Enabled GLSL/SPIR-V Extensions
 
-Another way to get a handle is via direct table access:
-```cpp
-Texture2D<float4> tex = daxa::sampled_images[id.index()];
-```
-This works in a similar way to DirectX12 direct head indexing.
+Daxa's GLSL headers always enable a small set of extensions required for code sharing and bindless access to work:
 
-Finally, to get the texture type of a typed id/index you call the get member function:
-```cpp
-Texture2DId<float4> tex_id= ...;
-Texture2D<float4> tex = tex_id.get();
-```
-
-> Note: In contrast to glsl, you can treat the returned Hlsl texture handles as local variables.
-
-Example:
-
-```cpp
-#include <daxa/daxa.slang>
-...
-daxa::ImageViewId img = ...;
-daxa::Texture3Did<int4> typed_img = img;
-daxa::SamplerId smp = ...;
-
-int4 v0 = Texture3D<int4>::Get(img).Sample(smp, float3(...));
-int4 v1 = typed_img.get().Sample(smp, float3(...));
-
-daxa::ImageViewId img2 = ...;
-RWTexture2D<float4>::Get(img2)[int2(...)] = float4(...);
-
-daxa::ImageViewId img3 = ...;
-// Alternative two: As you can treat them as local variables in Hlsl, the following is also possible:
-Texture1DArray<float4> t = daxa::sampled_images[img3.index()];
-uint mips; uint width; uint elements; uint levels;
-t.GetDimensions(mips, width, elements, levels);
-...
-```
-
-### Buffers
-
-Each buffer is created with a buffer device address and optionally a mapped host pointer, as long as the memory requirements allow for it.
-
-The host and device pointers can be retrieved:
-
-```cpp
-void* host_ptr                              = device.get_buffer_host_address(buffer_id).value();
-daxa::types::DeviceAddress device_ptr = device.get_buffer_device_address(buffer_id).value();
-```
-
-### Buffer Access in Glsl
-
-The general way to access buffers in Daxa is via buffer device address and Glsl's [buffer reference](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GLSL_EXT_buffer_reference.txt).
-
-> In order for other features to work correctly, Daxa requires very specific glsl layout specifiers for buffer references. Thus, it is necessary to use Daxas macros for buffer reference declarations!
-
-Daxa provides four ways to declare a new buffer reference:
-
-- `DAXA_DECL_BUFFER_REFERENCE_ALIGN(ALIGNMENT)`: declares head for new buffer reference block with a given alignment
-- `DAXA_DECL_BUFFER_REFERENCE`: declares head for new buffer reference block with default alignment (4)
-- `DAXA_DECL_BUFFER_PTR_ALIGN(STRUCT, ALIGNMENT)`: declares readonly and read/write buffer pointers to given struct type with given alignment
-- `DAXA_DECL_BUFFER_PTR(STRUCT)`: declares readonly and read/write buffer pointers to given struct type with default alignment (4)
-
-Usage examples:
-
-```glsl
-DAXA_DECL_BUFFER_REFERENCE MyBufferReference
-{
-    uint field;
-};
-
-struct MyStruct { uint i; };
-DAXA_DECL_BUFFER_PTR(MyStruct)
-
-...
-void main()
-{
-    // You can also get the address of a buffer id inside all shaders: daxa_u64 daxa_id_to_address(BUFFER_ID)
-    daxa_u64 address = ...;
-    MyBufferReference my_ref = MyBufferReference(address);
-    my_ref.field = 1;
-    daxa_BufferPtr(MyStruct) my_readonly_ptr = daxa_BufferPtr(MyStruct)(address);
-    uint read_value = deref(my_readonly_ptr).i;
-    daxa_RWBufferPtr(MyStruct) my_readwrite_ptr = daxa_RWBufferPtr(MyStruct)(address);
-    deref(my_readwrite_ptr).i = 1;
-}
-```
-
-In C++, the `daxa_BufferPtr(x)` and `daxa_RWBufferPtr` macros become `daxa::types::DeviceAddress`, so you can put them into structs, push constants and or buffer blocks. `DAXA_DECL_BUFFER_PTR_ALIGN` and `DAXA_DECL_BUFFER_PTR` become blank lines in C++. This makes them usable in shared files.
-
-It is generally recommended to declare structs in shared files and then declare buffer pointers to the structs. Using structs and buffer pointers reduces redundancy and is less error-prone. The pointer-like syntax with structs is also quite convenient in general, as you gain value semantics to the pointee with the `deref(ptr)` macro.
-
-Sometimes, it is necessary to use Glsl annotations/ qualifiers for fields within buffer blocks or to use Glsl features that are not available in C++. For example, the coherent annotation or unbound arrays are not valid in C++ or in Glsl/C++ structs, meaning in order to use those features, one must use a buffer reference instead of a buffer pointer.
-
-> The Daxa buffer ptr types are simply buffer references containing one field named `value` of the given struct type.
-> For the `BufferPtr` macro, the field is annotated with `readonly`, while it is not with `RWBufferPtr`.
-
-### Buffer Access in Slang
-
-In Slang you can either use c style pointers or the old school hlsl buffer types.
-Example:
-
-```cpp
-#include <daxa.slang>
-...
-struct MyStruct
-{
-    uint field;
-};
-// Slang doesnt need the buffer ptr macros :D:
-// DAXA_DECL_BUFFER_PTR(MyStruct)
-
-void main()
-{
-    daxa::BufferId buffer_id = ...;
-    float* buffer_ptr = ...;
-    ByteAddressBuffer b = ByteAddressBuffer::Get(buffer_id);
-    b.Store(0, 1);
-    *buffer_ptr = 0.0f;
-}
-```
-
-> Note: Hlsl provides atomic ops for ByteAddressBuffer as well as a sizeof operator for structs.
-
-## Always Enabled SPIR-V/Glsl Extensions
-
-- [GL_KHR_memory_scope_semantics](https://github.com/KhronosGroup/Glsl/blob/master/extensions/khr/GL_KHR_memory_scope_semantics.txt)
-  - Removes/replaces coherent as a buffer and image decoration in SpirV and Glsl.
-  - Replaces coherent modifiers with more specific memory barriers and atomic op function calls. These new calls specify a more granular memory and execution scope for memory access (for example, perthread/subgroup/workgroup/device).
-  - The old coherent was practically ub.
-  - New scopes give very granular, well-defined memory and execution scopes that can increase performance.
-- [GL_EXT_scalar_block_layout](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GL_EXT_scalar_block_layout.txt)
-  - Allows for full parity of C++ and Glsl structs.
-  - Allows for the shared file format to contain uniform buffers and structs that have the same memory layout in C++ and Glsl without additional padding
-  - much more intuitive and less error-prone compared to old layout specifications
-- [GL_EXT_samplerless_texture_functions](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GL_EXT_samplerless_texture_functions.txt):
-  - Adds sampler-less functions for texture functions.
-  - Vulkan initially had some strange OpenGl'isms for texture functions.
-  - This extension adds function overloads for texture functions that don't need or don't even use the sampler in them at all.
-- [GL_EXT_shader_image_int64](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GLSL_EXT_shader_image_int64.txt)
-  - Daxa requires 64-bit atomics.
-  - It is 204, and platforms that don't support this are not worth thinking about (Mainly Intel and Apple)
-- [GL_EXT_nonuniform_qualifier](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GL_EXT_nonuniform_qualifier.txt)
-  - Allows the use of the qualifier `nonuniformEXT(x)`
-  - Convenient for diverging access to descriptors within a warp.
-- [GL_EXT_shader_explicit_arithmetic_types_int64](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GL_EXT_nonuniform_qualifier.txt)
-  - Defines fixed-size primitive types like uint32_t
-  - Needed to create the well-defined struct code sharing in Daxa shared files.
-- [GL_EXT_shader_image_load_formatted](https://github.com/KhronosGroup/OpenGL-Registry/blob/main/extensions/EXT/EXT_shader_image_load_formatted.txt)
-  - Enables storage image access with no format specification in the type declaration.
-  - Modern desktop GPUs don't need the format annotation at all, as they store the format in the descriptor.
-  - Reduces shader bloat generated by the Daxa shader preamble considerably (would be over 10x larger without it).
-  - Simplifies storage image access.
-- [GL_EXT_buffer_reference](https://github.com/KhronosGroup/Glsl/blob/master/extensions/ext/GLSL_EXT_buffer_reference.txt)
-  - Needed to make BufferPtr and RWBufferPtr possible.
-  - Allows declaration of buffer references, making it possible to interpret a 64-bit integer as a memory address and then use the reference as a pointer.
+- **`GL_EXT_scalar_block_layout`** - gives C++ and GLSL structs identical layouts, which is what makes shared `daxa_*` structs possible.
+- **`GL_EXT_shader_explicit_arithmetic_types_int64`** - fixed-size integer types (`uint64_t`, ...) used by ids and buffer addresses.
+- **`GL_EXT_buffer_reference`** (+ `buffer_reference2`) - lets a `uint64_t` be reinterpreted as a pointer-like buffer reference, the basis of `daxa_BufferPtr`/`daxa_RWBufferPtr`.
+- **`GL_EXT_nonuniform_qualifier`** - allows `nonuniformEXT(...)`, needed for diverging bindless resource indices within a subgroup.
+- **`GL_EXT_samplerless_texture_functions`** - adds texture-query overloads that don't require a sampler, used by the `daxa_texture*`/`daxa_image*` accessors.
+- **`GL_EXT_shader_image_load_formatted`** - lets storage images be declared without a fixed format, drastically shrinking the generated bindless image tables.
+- **`GL_EXT_shader_image_int64`** *(optional, `DAXA_IMAGE_INT64`)* - 64-bit image atomics, for the i64/u64 image tables.
+- **`GL_KHR_memory_scope_semantics`** - replaces the old, poorly-defined `coherent` qualifier with explicit, scoped memory/execution barriers.
