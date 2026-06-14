@@ -75,8 +75,7 @@ export default defineConfig({
         )
       ],
       components: {
-        Sidebar: './src/components/Sidebar.astro',
-        Head: './src/components/Head.astro'
+        Sidebar: './src/components/Sidebar.astro'
       },
       lastUpdated: true,
       editLink: {
