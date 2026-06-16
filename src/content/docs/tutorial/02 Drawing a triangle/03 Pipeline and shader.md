@@ -9,7 +9,7 @@ slug: "tutorial/drawing-a-triangle/pipeline-and-shader"
 Push constants are a small bank of values, written from the CPU and read by shaders, that don't require creating a buffer or binding a descriptor set. In Daxa they're the standard way to pass per-draw/per-dispatch data - most commonly a handful of `daxa_BufferPtr`/`daxa_ImageId` handles into bindless resources, as we'll do here.
 
 :::tip[Learn more]
-See [Shader Integration](/wiki/shader-integration/#push-constants) for how push constants work on the shader side, and [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#push-constants) for the size limit (`DAXA_MAX_PUSH_CONSTANT_BYTE_SIZE`, 128 bytes) and the `.push_constant_size` pipeline field.
+See [Shader Integration](/wiki/shader-integration/#push-constants) for how push constants work on the shader side.
 :::
 
 To use push constants in our demo project, we need to create a new file: `src/shader/shared.inl` which will be a shared file between our main program and our shader file. Since Glsl is more or less a superset of basic C, we can use some code snippets in both languages.
@@ -173,5 +173,5 @@ Note that we don't need to specify `.push_constant_size` here - it defaults to `
 Our triangle pipeline only sets `.color_attachments` (with default, disabled blending) and leaves `.raster`/`.depth_test` at their defaults.
 
 :::tip[Learn more]
-See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/) for the full `RasterPipelineInfo` - every blend mode and factor, depth testing, tessellation, and the complete rasterizer state (culling, polygon mode, conservative/line rasterization, MSAA) - as well as compute and ray tracing pipeline creation.
+See [Pipelines](/wiki/pipelines/raster-pipelines) for the full `RasterPipelineInfo` - every blend mode and factor, depth testing, tessellation, and the complete rasterizer state (culling, polygon mode, conservative/line rasterization, MSAA) - as well as compute and ray tracing pipeline creation.
 :::

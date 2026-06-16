@@ -211,7 +211,7 @@ Inside a renderpass, `RenderCommandRecorder` exposes:
 - `draw_indirect(DrawIndirectInfo{...})` / `draw_indirect_count(DrawIndirectCountInfo{...})` — draw with parameters from a GPU buffer, optionally with the draw count also on the GPU.
 - `draw_mesh_tasks(DrawMeshTasksInfo{.x, .y, .z})` / `draw_mesh_tasks_indirect` / `draw_mesh_tasks_indirect_count` — mesh shader draw variants.
 
-See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#raster-pipelines) for `RasterPipelineInfo`, color attachment formats, blending, depth testing, and rasterizer state, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the resources used as attachments and vertex buffers.
+See [Pipelines](/wiki/pipelines/#raster-pipelines) for `RasterPipelineInfo`, color attachment formats, blending, depth testing, and rasterizer state, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the resources used as attachments and vertex buffers.
 
 ### Debug labels
 
