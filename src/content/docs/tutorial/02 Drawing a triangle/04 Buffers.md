@@ -25,6 +25,12 @@ To allocate the data needed for our triangle vertex data we can simply create a 
     while (!window.should_close())
 ```
 
+`device.create_buffer` returns a `daxa::BufferId` — a lightweight handle into Daxa's bindless resource table. You pass this ID directly to shaders (via push constants) instead of binding a slot, and the GPU dereferences it through a buffer device address.
+
+:::tip[Learn more]
+See [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/#buffers) for the full resource model: how `BufferId`s map to device addresses, object lifetimes, and deferred destruction.
+:::
+
 ## Uploading to Buffers
 
 To upload to a buffer in daxa, you query the buffer's host pointer. Not all buffers have a host pointer, make sure to set either `daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE` or `daxa::MemoryFlagBits::HOST_ACCESS_RANDOM` as `.memory_flags` when creating the buffer:
@@ -45,6 +51,10 @@ To upload to a buffer in daxa, you query the buffer's host pointer. Not all buff
 
 * Use `daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE` for buffers that require fast reads on the gpu and host writes. This type is suboptimal for host readback. Its typically in device vram.
 * Use `daxa::MemoryFlagBits::HOST_ACCESS_RANDOM` for buffers that do not need fast access on the gpu but random cpu write and read access. This type is optimal for readback. Its typically in host ram.
+
+:::tip[Learn more]
+See [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/#memory) for the full list of memory flag combinations and the allocation types they map to.
+:::
 
 Uploading any data itself is then done via direct writes through the host address:
 

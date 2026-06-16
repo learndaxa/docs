@@ -6,17 +6,7 @@ slug: "tutorial/drawing-a-triangle/finishing-up"
 
 ## Implementing the main loop
 
-Each frame we need to:
-
-1. Handle a possible window resize by resizing the swapchain.
-2. Acquire the next swapchain image. If acquisition fails (e.g. the window was minimized), skip the frame.
-3. Record commands: transition the swapchain image to `GENERAL`, run our render pass (clear + draw the triangle), then transition the image to `PRESENT_SRC`.
-4. Submit the commands and present the frame.
-5. Let the device reclaim any resources that are no longer in use.
-
-:::tip[Learn more]
-See [Swapchain](/wiki/swapchain/) for what `acquire_next_image()`/`resize()` actually do, frames-in-flight, and a fully annotated version of this loop.
-:::
+With recording and submission in place, there are two remaining pieces to complete the frame loop: handling window resizes before acquiring an image, and reclaiming GPU resources at the end of each frame.
 
 ```diff lang="cpp"
 // src/main.cpp
@@ -30,77 +20,19 @@ See [Swapchain](/wiki/swapchain/) for what `acquire_next_image()`/`resize()` act
 +            window.swapchain_out_of_date = false;
 +        }
 +
-+        // acquire_next_image waits until a frame in flight is available, then attempts
-+        // to acquire a new swapchain image. On failure it returns an empty ImageId.
-+        daxa::ImageId swapchain_image = swapchain.acquire_next_image();
-+        if (swapchain_image.is_empty())
-+        {
-+            continue;
-+        }
-+
-+        // Record and submit frame gpu commands
-+        {
-+            daxa::CommandRecorder recorder = device.create_command_recorder({.name = "Main Loop Cmd Recorder"});
-+
-+            daxa::ImageInfo swapchain_image_info = device.image_info(swapchain_image).value();
-+
-+            // Daxa uses image layout GENERAL everywhere, so the only explicit layout
-+            // transitions needed are: first use of an image (TO_GENERAL) and conversion
-+            // to a presentable format (TO_PRESENT_SRC) - see Learn more below.
-+            recorder.pipeline_image_barrier({
-+                .dst_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
-+                .image = swapchain_image,
-+                .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
-+            });
-+
-+            // Starting a render pass turns the CommandRecorder into a RenderCommandRecorder,
-+            // which can only record commands valid within a render pass.
-+            daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
-+                .color_attachments = std::array{
-+                    daxa::RenderAttachmentInfo{
-+                        .image_view = swapchain_image.default_view(),
-+                        .load_op = daxa::AttachmentLoadOp::CLEAR,
-+                        .clear_value = std::array<daxa::f32, 4>{0.1f, 0.0f, 0.5f, 1.0f},
-+                    },
-+                },
-+                .render_area = {.width = swapchain_image_info.size.x, .height = swapchain_image_info.size.y},
-+            });
-+
-+            render_recorder.set_pipeline(*pipeline);
-+
-+            // The only way to send data to a shader in daxa is via push constants.
-+            // Here, we send the buffer pointer to the vertices to the gpu via a push constant.
-+            render_recorder.push_constant(MyPushConstant{.vertices = device.device_address(buffer_id).value()});
-+
-+            render_recorder.draw({.vertex_count = 3});
-+
-+            // VERY IMPORTANT! A renderpass must be ended after finishing, which returns
-+            // back the original command recorder.
-+            recorder = std::move(render_recorder).end_renderpass();
-+
-+            recorder.pipeline_image_barrier({
-+                .src_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
-+                .image = swapchain_image,
-+                .layout_operation = daxa::ImageLayoutOperation::TO_PRESENT_SRC,
-+            });
-+
-+            daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
-+
-+            // Submitted/presented commands touching a swapchain image must wait on the
-+            // current acquire semaphore and signal the current present semaphore + timeline pair.
-+            device.submit_commands({
-+                .command_lists = std::array{cmd_list},
-+                .wait_binary_semaphores = std::array{swapchain.current_acquire_semaphore()},
-+                .signal_binary_semaphores = std::array{swapchain.current_present_semaphore()},
-+                .signal_timeline_semaphores = std::array{swapchain.current_timeline_pair()},
-+            });
-+
-+            device.present_frame({
-+                .wait_binary_semaphores = std::array{swapchain.current_present_semaphore()},
-+                .swapchain = swapchain,
-+            });
-+        }
-+
+        daxa::ImageId swapchain_image = swapchain.acquire_next_image();
+        if (swapchain_image.is_empty())
+        {
+            continue;
+        }
+
+        // ... recording and submission ...
+
+        device.present_frame({
+            .wait_binary_semaphores = std::array{swapchain.current_present_semaphore()},
+            .swapchain = swapchain,
+        });
+
 +        // The device performs all memory reclaiming in the collect_garbage call.
 +        // It's best to call it once at the end of each frame.
 +        device.collect_garbage();
@@ -108,8 +40,7 @@ See [Swapchain](/wiki/swapchain/) for what `acquire_next_image()`/`resize()` act
 ```
 
 :::tip[Learn more]
-- [Command Recording & Submission](/wiki/command-recording/#raster-pass) covers `CommandRecorder`/`RenderCommandRecorder`, `begin_renderpass`/`end_renderpass`, and `submit_commands`/`present_frame` in full.
-- [Synchronization](/wiki/synchronization/#image-barriers) explains `pipeline_image_barrier`, the `GENERAL` layout, and why exactly these two `TO_GENERAL`/`TO_PRESENT_SRC` transitions are needed.
+See [Swapchain](/wiki/swapchain/) for what `acquire_next_image()`/`resize()` actually do, frames-in-flight, and a fully annotated version of this loop.
 :::
 
 ## Cleaning up

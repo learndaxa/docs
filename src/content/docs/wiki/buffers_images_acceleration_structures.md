@@ -209,7 +209,7 @@ daxa::ImageId image_a = device.create_image_from_memory_block({
 
 Since `offset` is yours to choose, two resources can be given *overlapping* ranges of the same `MemoryBlock`, causing them to alias the same physical memory. This is safe only if you guarantee their GPU lifetimes/usages never overlap (one is fully done being read/written before the other's first use) - the driver doesn't know the two resources share memory, so no synchronization between them is inserted automatically; you are fully responsible for it.
 
-> [TaskGraph](/wiki/taskgraph/) uses exactly this mechanism for transient resources: it computes each transient resource's lifetime, determines which ones never overlap, allocates a single `MemoryBlock` sized for the worst-case overlap, and creates each transient buffer/image via `create_buffer_from_memory_block`/`create_image_from_memory_block` at a computed offset - all the barriers needed around the aliasing are inserted for you. This is where most of TaskGraph's memory savings over a naive per-resource allocation come from.
+> [TaskGraph](/wiki/taskgraph-how-why/) uses exactly this mechanism for transient resources: it computes each transient resource's lifetime, determines which ones never overlap, allocates a single `MemoryBlock` sized for the worst-case overlap, and creates each transient buffer/image via `create_buffer_from_memory_block`/`create_image_from_memory_block` at a computed offset - all the barriers needed around the aliasing are inserted for you. This is where most of TaskGraph's memory savings over a naive per-resource allocation come from.
 
 ### Building your own suballocator
 

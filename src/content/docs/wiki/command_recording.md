@@ -8,7 +8,7 @@ slug: wiki/command-recording
 
 In Daxa, all GPU work - copies, compute dispatches, draws, ray tracing, acceleration structure builds - is recorded into a `daxa::CommandRecorder`. Once recording is finished, the recorder is turned into a `daxa::ExecutableCommandList`, which is then handed to `device.submit_commands(...)` to actually run on the GPU.
 
-> If you'd rather not record and synchronize commands by hand, [TaskGraph](/wiki/taskgraph/) builds a `CommandRecorder` for you each frame and inserts barriers/semaphores automatically based on declared task resource usages.
+> If you'd rather not record and synchronize commands by hand, [TaskGraph](/wiki/taskgraph-bottom-up/) builds a `CommandRecorder` for you each frame and inserts barriers/semaphores automatically based on declared task resource usages.
 
 `daxa::CommandRecorder` is created from a `daxa::Device` - see [Initialization and Device](/wiki/initialization-and-device/) for how a device is created.
 
@@ -142,9 +142,190 @@ device.submit_commands({
 });
 ```
 
-Only `RenderCommandRecorder` exposes draw-related functions (`draw`, `draw_indexed`, `draw_indirect`, `set_viewport`, `set_scissor`, ...), and only `CommandRecorder` exposes copies, barriers, and dispatches - so the type system enforces where each command is legal.
+Only `RenderCommandRecorder` exposes draw-related functions, and only `CommandRecorder` exposes copies, barriers, and dispatches — the type system enforces where each command is legal.
 
-See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#raster-pipelines--renderpasses) for `RasterPipelineInfo`, render attachments, and depth testing, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the `vertex_buffer`/`render_target` resources referenced here.
+#### Renderpass attachments
+
+`begin_renderpass` takes a `RenderPassBeginInfo`:
+
+```cpp
+struct RenderAttachmentInfo
+{
+    ImageViewId image_view = {};
+    AttachmentLoadOp load_op = AttachmentLoadOp::DONT_CARE;
+    AttachmentStoreOp store_op = AttachmentStoreOp::STORE;
+    ClearValue clear_value = {};
+    Optional<AttachmentResolveInfo> resolve = {};
+};
+
+struct RenderPassBeginInfo
+{
+    FixedList<RenderAttachmentInfo, 8> color_attachments = {};
+    Optional<RenderAttachmentInfo> depth_attachment = {};
+    Optional<RenderAttachmentInfo> stencil_attachment = {};
+    Rect2D render_area = {};
+};
+```
+
+- `.color_attachments`: up to 8 color attachments, each an `ImageViewId` plus load/store behavior. `.depth_attachment` / `.stencil_attachment` use the same struct for depth/stencil images.
+- `.load_op`: what happens to the attachment's existing contents at the start of the renderpass.
+  - `LOAD` - keep whatever is already in the image.
+  - `CLEAR` - clear to `.clear_value` before any drawing.
+  - `DONT_CARE` - contents are undefined at the start; use this when the renderpass is guaranteed to fully overwrite the attachment, to avoid a wasted clear/load.
+- `.store_op`: what happens to the contents at the end of the renderpass.
+  - `STORE` - write the rendered contents back to the image (the normal case).
+  - `DONT_CARE` - discard the contents; useful for transient attachments (e.g. an MSAA attachment that's immediately resolved and never needed afterwards).
+- `.clear_value`: a `Variant<std::array<f32,4>, std::array<i32,4>, std::array<u32,4>, DepthValue>` — pick the variant matching the attachment's format (float/sint/uint color, or `DepthValue{.depth, .stencil}` for depth/stencil attachments). Only used when `.load_op == CLEAR`.
+- `.resolve`: `Optional<AttachmentResolveInfo>` — for MSAA attachments, an additional single-sample image view that the multisampled result is resolved into at the end of the renderpass, plus a `ResolveMode` (`SAMPLE_ZERO`, `AVERAGE`, `MIN`, `MAX`) controlling how the samples are combined.
+- `.render_area`: a `Rect2D` (`.x`, `.y`, `.width`, `.height`) defining the region of the attachments that's rendered to.
+
+```cpp
+daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
+    .color_attachments = std::array{
+        daxa::RenderAttachmentInfo{
+            .image_view = swapchain_image.default_view(),
+            .load_op = daxa::AttachmentLoadOp::CLEAR,
+            .clear_value = std::array<f32, 4>{0.1f, 0.1f, 0.1f, 1.0f},
+        },
+    },
+    .depth_attachment = daxa::RenderAttachmentInfo{
+        .image_view = depth_view,
+        .load_op = daxa::AttachmentLoadOp::CLEAR,
+        .clear_value = daxa::DepthValue{.depth = 1.0f, .stencil = 0},
+    },
+    .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
+});
+```
+
+#### Draw commands
+
+Inside a renderpass, `RenderCommandRecorder` exposes:
+
+- `set_pipeline(pipeline)` — bind a raster pipeline.
+- `push_constant(data)` — upload push constant data.
+- `set_viewport(ViewportInfo{...})` / `set_scissor(Rect2D{...})` — set the viewport and scissor rectangles. These are always dynamic and not baked into `RasterPipelineInfo`.
+- `set_depth_bias(DepthBiasInfo{...})` — override the pipeline's depth bias values dynamically per draw.
+- `set_index_buffer(SetIndexBufferInfo{...})` — bind an index buffer before `draw_indexed`.
+- `draw(DrawInfo{...})` — non-indexed draw.
+- `draw_indexed(DrawIndexedInfo{...})` — indexed draw.
+- `draw_indirect(DrawIndirectInfo{...})` / `draw_indirect_count(DrawIndirectCountInfo{...})` — draw with parameters from a GPU buffer, optionally with the draw count also on the GPU.
+- `draw_mesh_tasks(DrawMeshTasksInfo{.x, .y, .z})` / `draw_mesh_tasks_indirect` / `draw_mesh_tasks_indirect_count` — mesh shader draw variants.
+
+See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#raster-pipelines) for `RasterPipelineInfo`, color attachment formats, blending, depth testing, and rasterizer state, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the resources used as attachments and vertex buffers.
+
+### Debug labels
+
+Debug labels annotate a command buffer with named, colored regions that appear in GPU debugging and profiling tools such as RenderDoc, NSight, and PIX. They have no measurable runtime cost outside of a validation/debug context.
+
+```cpp
+recorder.begin_label({
+    .label_name = "Shadow Pass",
+    .label_color = {1.0f, 0.5f, 0.0f, 1.0f},
+});
+
+// ... shadow pass commands ...
+
+recorder.end_label();
+```
+
+Labels can be nested — each `begin_label` must be matched by an `end_label` before the command list is completed. To drop a single named marker with no extent, use `insert_label`:
+
+```cpp
+recorder.insert_label({
+    .label_name = "Upload complete",
+    .label_color = {0.0f, 1.0f, 0.0f, 1.0f},
+});
+```
+
+`label_color` is an RGBA `f32` vec4. Labels are backed by `VK_EXT_debug_utils` and are silently ignored when the extension is not loaded.
+
+### Timestamp queries
+
+Timestamp queries let you record GPU timestamps at specific pipeline stages and read them back on the CPU to measure how long sections of GPU work took.
+
+First, create a `TimelineQueryPool` and reset it before writing:
+
+```cpp
+daxa::TimelineQueryPool query_pool = device.create_timeline_query_pool({
+    .query_count = 2,
+    .name = "frame timings",
+});
+
+recorder.reset_timestamps({
+    .query_pool = query_pool,
+    .start_index = 0,
+    .count = 2,
+});
+```
+
+Write timestamps around the work you want to measure:
+
+```cpp
+recorder.write_timestamp({
+    .query_pool = query_pool,
+    .pipeline_stage = daxa::PipelineStageFlagBits::TOP_OF_PIPE,
+    .query_index = 0,
+});
+
+// ... work to measure ...
+
+recorder.write_timestamp({
+    .query_pool = query_pool,
+    .pipeline_stage = daxa::PipelineStageFlagBits::BOTTOM_OF_PIPE,
+    .query_index = 1,
+});
+```
+
+After the frame (once the GPU has finished — e.g. after `collect_garbage`), read the results back:
+
+```cpp
+std::array<u64, 2> timestamps = {};
+query_pool.get_query_results(0, 2, timestamps.data());
+
+float ms = float(timestamps[1] - timestamps[0])
+         * device.properties().limits.timestamp_period
+         / 1e6f;
+```
+
+`timestamp_period` is a device-specific constant — the number of nanoseconds per raw timestamp tick. It varies between GPU vendors and models, so it must be queried from the device rather than assumed. Dividing by `1e6` then converts nanoseconds to milliseconds. Use `TOP_OF_PIPE`/`BOTTOM_OF_PIPE` for the widest bracket; narrow it to specific stages (e.g. `COMPUTE_SHADER`, `COLOR_ATTACHMENT_OUTPUT`) when you want to isolate a particular stage's contribution.
+
+### Events
+
+Events are a fine-grained synchronization primitive that splits a pipeline barrier into two halves — a **signal** half (`set_event`) and a **wait** half (`wait_event`) — that can be placed at different points in the same command buffer. Work recorded between the signal and the wait is free to execute on the GPU as long as it doesn't depend on the signaled resource.
+
+This is useful when a dependency is partial: for example, a compute shader writes two separate buffer regions, and a subsequent copy only depends on the first. A regular pipeline barrier would stall until all of the compute is done. An event signals as soon as the first region is written, allowing the copy and the rest of the compute to overlap.
+
+```cpp
+daxa::Event event = device.create_event({.name = "compute region 0 done"});
+
+// Reset before use (required before each signal/wait cycle).
+recorder.reset_event({
+    .event = event,
+    .stage = daxa::PipelineStageFlagBits::ALL_COMMANDS,
+});
+
+recorder.dispatch({...}); // compute that writes region 0
+
+// Signal after the compute stage — the event is set once the GPU
+// reaches this point in the command stream.
+recorder.signal_event({
+    .event = event,
+    .src_access = daxa::AccessConsts::COMPUTE_SHADER_WRITE,
+});
+
+// Other work that doesn't need region 0 can go here and will
+// overlap with downstream copies that do.
+
+// Wait before anything that reads region 0.
+recorder.wait_event({
+    .event = event,
+    .dst_access = daxa::AccessConsts::TRANSFER_READ,
+});
+
+recorder.copy_buffer_to_buffer({...}); // reads region 0
+```
+
+Events operate strictly within a single queue — they cannot synchronize across queues. For cross-queue dependencies, use timeline semaphores (see [Synchronization](/wiki/synchronization/#timeline-semaphores)).
 
 ## Pipeline barriers
 
@@ -153,6 +334,32 @@ Daxa keeps all resources in image layout `GENERAL`. The only layout transitions 
 ## Completing a command list
 
 `complete_current_commands()` finalizes the recorded commands into a ready-to-submit `daxa::ExecutableCommandList` (this corresponds to ending the underlying `VkCommandBuffer`). This does significant driver-side CPU work, so it's best not to call it immediately before submitting on a time-critical thread - for example, when recording on worker threads, complete each command list as soon as it's done, and only hand the resulting `ExecutableCommandList`s to the submitting thread.
+
+## Deferred resource destruction
+
+While recording, you can hand a resource to the `CommandRecorder` and ask it to destroy that resource once the command list has finished executing on the GPU:
+
+```cpp
+daxa::BufferId staging = device.create_buffer({
+    .size = upload_size,
+    .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_SEQUENTIAL_WRITE,
+    .name = "upload staging",
+});
+
+// ... write data into staging, record the copy ...
+
+recorder.destroy_buffer_deferred(staging);
+
+daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
+device.submit_commands({.command_lists = std::array{cmd_list}});
+// staging will be destroyed automatically once the GPU finishes cmd_list
+```
+
+The same exists for `destroy_image_deferred`, `destroy_image_view_deferred`, and `destroy_sampler_deferred`.
+
+This is particularly useful for **one-shot resources** — staging buffers, scratch buffers, temporary images — where the resource only needs to live long enough for the command list that uses it to finish. Without deferred destruction, you would have to return the ID to the caller, thread it through whatever code issues the submit, check when the submit is done, and then call `device.destroy_buffer` at exactly the right time. That's a lot of plumbing for something that has a completely predictable lifetime. Deferred destruction collapses all of it into a single call at the recording site.
+
+> This is a convenience for resources with a clear, short lifetime tied to a specific command list. For long-lived resources or anything accessed across multiple frames, use normal `device.destroy_*` calls — deferring everything would obscure lifetimes and make memory management harder to reason about.
 
 ## Submitting commands
 

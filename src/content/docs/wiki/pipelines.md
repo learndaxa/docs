@@ -1,7 +1,7 @@
 ---
-title: Pipelines & Renderpasses
-description: Compute, raster, and ray tracing pipeline creation, renderpass attachments, and the full raster blend/depth/rasterizer state
-slug: wiki/pipelines-and-renderpasses
+title: Pipelines
+description: Compute, raster, and ray tracing pipeline creation, and the full raster blend/depth/rasterizer state
+slug: wiki/pipelines
 ---
 
 ## Description
@@ -71,60 +71,9 @@ recorder.dispatch({.x = group_count_x, .y = group_count_y, .z = group_count_z});
 
 `dispatch_indirect(DispatchIndirectInfo{...})` is also available, reading the dispatch dimensions from a `BufferId` at a given offset instead of immediate values.
 
-## Raster Pipelines & Renderpasses
+## Raster Pipelines
 
-Raster pipelines run inside a **renderpass** - a scope, opened with `begin_renderpass` and closed with `end_renderpass`, during which draw calls are recorded against a fixed set of color/depth/stencil attachments. See [Command Recording & Submission](/wiki/command-recording/) for how `CommandRecorder` and `RenderCommandRecorder` hand off into and out of this scope. This section covers the two things you configure to make that work: the renderpass's **attachments** (what you're rendering into, this frame) and the **`RasterPipelineInfo`** (how the pipeline's shaders process and blend into those attachments, fixed at pipeline-creation time).
-
-### Renderpass attachments
-
-```cpp
-struct RenderAttachmentInfo
-{
-    ImageViewId image_view = {};
-    AttachmentLoadOp load_op = AttachmentLoadOp::DONT_CARE;
-    AttachmentStoreOp store_op = AttachmentStoreOp::STORE;
-    ClearValue clear_value = {};
-    Optional<AttachmentResolveInfo> resolve = {};
-};
-
-struct RenderPassBeginInfo
-{
-    FixedList<RenderAttachmentInfo, 8> color_attachments = {};
-    Optional<RenderAttachmentInfo> depth_attachment = {};
-    Optional<RenderAttachmentInfo> stencil_attachment = {};
-    Rect2D render_area = {};
-};
-```
-
-- `.color_attachments`: up to 8 color attachments, each an `ImageViewId` plus load/store behavior. `.depth_attachment` / `.stencil_attachment` are the same struct, used for depth/stencil images.
-- `.load_op`: what happens to the attachment's existing contents at the start of the renderpass.
-  - `LOAD` - keep whatever is already in the image.
-  - `CLEAR` - clear to `.clear_value` before any drawing.
-  - `DONT_CARE` - contents are undefined at the start; use this when the renderpass is guaranteed to fully overwrite the attachment, to avoid a wasted clear/load.
-- `.store_op`: what happens to the contents at the end of the renderpass.
-  - `STORE` - write the rendered contents back to the image (the normal case).
-  - `DONT_CARE` - discard the contents; useful for transient attachments (e.g. an MSAA attachment that's immediately resolved and never needed afterwards).
-- `.clear_value`: a `Variant<std::array<f32,4>, std::array<i32,4>, std::array<u32,4>, DepthValue>` - pick the variant matching the attachment's format (float/sint/uint color, or `DepthValue{.depth, .stencil}` for depth/stencil attachments). Only used when `.load_op == CLEAR`.
-- `.resolve`: `Optional<AttachmentResolveInfo>` - for MSAA attachments, an additional single-sample image view that the multisampled result is resolved into at the end of the renderpass, plus a `ResolveMode` (`SAMPLE_ZERO`, `AVERAGE`, `MIN`, `MAX`) controlling how the samples are combined.
-- `.render_area`: a `Rect2D` (`.x`, `.y`, `.width`, `.height`) defining the region of the attachments that's rendered to.
-
-```cpp
-daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({
-    .color_attachments = std::array{
-        daxa::RenderAttachmentInfo{
-            .image_view = swapchain_image.default_view(),
-            .load_op = daxa::AttachmentLoadOp::CLEAR,
-            .clear_value = std::array<f32, 4>{0.1f, 0.1f, 0.1f, 1.0f},
-        },
-    },
-    .depth_attachment = daxa::RenderAttachmentInfo{
-        .image_view = depth_view,
-        .load_op = daxa::AttachmentLoadOp::CLEAR,
-        .clear_value = daxa::DepthValue{.depth = 1.0f, .stencil = 0},
-    },
-    .render_area = {.x = 0, .y = 0, .width = size_x, .height = size_y},
-});
-```
+Raster pipelines run inside a renderpass scope — opened with `begin_renderpass` and closed with `end_renderpass` on the `CommandRecorder`. This section covers `RasterPipelineInfo`, the fixed state baked into the pipeline at creation time: shader stages, color attachment formats and blending, depth testing, tessellation, and rasterizer settings. For the recording side — render attachment configuration, opening/closing renderpasses, and draw commands — see [Command Recording & Submission](/wiki/command-recording/#raster-pass).
 
 ### `RasterPipelineInfo`
 
@@ -347,22 +296,6 @@ struct RasterizerInfo
 - `.conservative_raster_info`: `Optional<ConservativeRasterInfo>` - enables [conservative rasterization](https://www.khronos.org/blog/vulkan-subgroup-tutorial), where `.mode` is `OVERESTIMATE` (any pixel even partially covered by a primitive is rasterized) or `UNDERESTIMATE` (only pixels fully covered are), and `.size` extends/shrinks the effective primitive size in pixels. Useful for things like voxelization, where you need guaranteed coverage of every touched pixel.
 - `.line_raster_info`: `Optional<LineRasterInfo>` - fine-grained line rendering control: `.mode` selects between `DEFAULT`, `RECTANGULAR`, `BRESENHAM`, and `RECTANGULAR_SMOOTH` line rasterization algorithms, and `.stippled` + `.stipple_factor` + `.stipple_pattern` enable dashed/dotted lines (a 16-bit repeating on/off pattern, each bit repeated `.stipple_factor` times).
 - `.static_state_sample_count`: `Optional<RasterizationSamples>` (`E1`, `E2`, `E4`, `E8` - 1/2/4/8x MSAA). When `None` (the default), the pipeline uses whatever MSAA sample count the command recorder is currently set to via `set_rasterization_samples` (a dynamic state, on devices that support it); when set, the sample count is baked into the pipeline and `set_rasterization_samples` must not be used to change it.
-
-### Using a raster pipeline
-
-```cpp
-daxa::RenderCommandRecorder render_recorder = std::move(recorder).begin_renderpass({...});
-
-render_recorder.set_pipeline(pipeline);
-render_recorder.set_viewport({.x = 0, .y = 0, .width = size_x, .height = size_y, .min_depth = 0.0f, .max_depth = 1.0f});
-render_recorder.set_scissor({.x = 0, .y = 0, .width = size_x, .height = size_y});
-render_recorder.push_constant(my_push_constant);
-render_recorder.draw({.vertex_count = 3});
-
-recorder = render_recorder.end_renderpass();
-```
-
-Viewport and scissor are always set dynamically per-draw via `set_viewport`/`set_scissor` - they're not part of `RasterPipelineInfo`. `set_index_buffer` is used before `draw_indexed`. Besides `draw`/`draw_indexed`, there are indirect (`draw_indirect`, `draw_indirect_count`) and mesh-shading (`draw_mesh_tasks`, `draw_mesh_tasks_indirect`, `draw_mesh_tasks_indirect_count`) variants. See [Command Recording & Submission](/wiki/command-recording/) for the renderpass begin/end mechanics in more depth.
 
 ## Ray Tracing Pipelines
 

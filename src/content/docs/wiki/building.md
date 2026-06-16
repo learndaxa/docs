@@ -60,7 +60,7 @@ This is the same mechanism for every util: the CMake option (e.g. `DAXA_ENABLE_U
 
 | CMake option | Enables | See also |
 |---|---|---|
-| `DAXA_ENABLE_UTILS_TASK_GRAPH` | `daxa/utils/task_graph.hpp` - automatic synchronization, transient resource aliasing. Implies `DAXA_ENABLE_UTILS_MEM`. | [TaskGraph](/wiki/taskgraph/) |
+| `DAXA_ENABLE_UTILS_TASK_GRAPH` | `daxa/utils/task_graph.hpp` - automatic synchronization, transient resource aliasing. Implies `DAXA_ENABLE_UTILS_MEM`. | [TaskGraph](/wiki/taskgraph-how-why/) |
 | `DAXA_ENABLE_UTILS_MEM` | `daxa/utils/mem.hpp` - ring buffer / `TransferMemoryPool` staging allocators. | [TransferMemoryPool](/wiki/buffer-texture-upload-and-mipmaps/#transfermemorypool-a-ready-made-reusable-staging-buffer) |
 | `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_GLSLANG` | GLSL shader compilation in the [Pipeline Manager](/wiki/pipeline-manager/), via glslang. | [Pipeline Manager](/wiki/pipeline-manager/) |
 | `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SLANG` | Slang shader compilation in the [Pipeline Manager](/wiki/pipeline-manager/), via a prebuilt Slang release. | [Pipeline Manager](/wiki/pipeline-manager/) |

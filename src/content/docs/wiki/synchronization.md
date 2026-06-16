@@ -10,7 +10,7 @@ GPUs execute work out of order and overlapped across many pipeline stages. Whene
 
 This page covers Daxa's manual synchronization primitives: pipeline barriers, image barriers, binary semaphores, timeline semaphores, and submit indices.
 
-> If you use [TaskGraph](/wiki/taskgraph/), you generally don't need any of this - TaskGraph automatically inserts all required pipeline barriers, image layout transitions, and cross-queue semaphores for you based on how you declare each task's resource usages. This page is useful when you record commands manually, which is in many cases its still easier/ more convenient.
+> If you use [TaskGraph](/wiki/taskgraph-how-why/), you generally don't need any of this - TaskGraph automatically inserts all required pipeline barriers, image layout transitions, and cross-queue semaphores for you based on how you declare each task's resource usages. This page is useful when you record commands manually, which is in many cases its still easier/ more convenient.
 
 ## Pipeline Barriers
 
