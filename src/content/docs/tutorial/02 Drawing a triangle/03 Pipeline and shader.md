@@ -171,7 +171,3 @@ We now can create our first pipeline. For a rasterization pipeline, we need to p
 Note that we don't need to specify `.push_constant_size` here - it defaults to `DAXA_MAX_PUSH_CONSTANT_BYTE_SIZE`, which is large enough for our `MyPushConstant` struct. You can set it explicitly if you want to constrain it.
 
 Our triangle pipeline only sets `.color_attachments` (with default, disabled blending) and leaves `.raster`/`.depth_test` at their defaults.
-
-:::tip[Learn more]
-See [Pipelines](/wiki/pipelines/raster-pipelines) for the full `RasterPipelineInfo` - every blend mode and factor, depth testing, tessellation, and the complete rasterizer state (culling, polygon mode, conservative/line rasterization, MSAA) - as well as compute and ray tracing pipeline creation.
-:::
