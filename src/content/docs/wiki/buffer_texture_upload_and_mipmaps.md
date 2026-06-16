@@ -201,7 +201,7 @@ device.submit_commands({
 
 This is the cheap, hardware-accelerated way to build a mip chain. If you need a different downsampling filter (e.g. a Gaussian blur, or one that handles alpha/normal maps specially), do the same thing with a compute shader dispatch per mip level instead of `blit_image_to_image`, with a `pipeline_barrier` between dispatches in place of the image barriers above - see [Command Recording & Submission: Compute Dispatch](/wiki/command-recording/#compute-dispatch).
 
-Once uploaded, see [Shader Integration](/wiki/shader-integration/#bindless-access-images--buffers) for sampling the image via its bindless `ImageViewId`, and [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#renderpass-attachments) for using it as a render attachment instead of a sampled texture.
+Once uploaded, see [Shader Integration](/wiki/shader-integration/#bindless-access-images--buffers) for sampling the image via its bindless `ImageViewId`, and [Pipelines](/wiki/pipelines/#color-attachments-and-blending) for using it as a render attachment instead of a sampled texture.
 
 ## Host Writes vs. GPU Copy Commands
 

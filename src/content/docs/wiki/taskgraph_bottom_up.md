@@ -73,7 +73,7 @@ task_graph.add_task(daxa::Task::Compute("init particles")
     }));
 ```
 
-`.writes(task_particles)` adds an attachment: it tells TaskGraph that this task writes `task_particles`. Because `daxa::Task::Compute` defaults its attachments to the compute shader stage, plain `.reads(...)`/`.writes(...)` here mean "compute shader read/write" - no extra prefix needed. Raster tasks instead use stage-specific accessors like `.color_attachment.writes(...)`, since a single raster task can touch several shader stages at once - see [Task Attachments](/wiki/taskgraph-how-why/#task-attachments).
+`.writes(task_particles)` adds an attachment: it tells TaskGraph that this task writes `task_particles`. Because `daxa::Task::Compute` defaults its attachments to the compute shader stage, plain `.reads(...)`/`.writes(...)` here mean "compute shader read/write" - no extra prefix needed. Raster tasks instead use stage-specific accessors like `.color_attachment.writes(...)`, since a single raster task can touch several shader stages at once - see [TaskGraph — How and Why](/wiki/taskgraph-how-why/).
 
 Inside the callback, `ti.device_address(task_particles)` resolves the *real* buffer address for this execution. The task only ever refers to the virtual `task_particles` handle while being recorded; the real resource is looked up each time the callback runs.
 
@@ -95,7 +95,7 @@ task_graph.add_task(daxa::Task::Compute("update particles")
     }));
 ```
 
-`.reads_writes(...)` is used here instead of a separate `.reads(...)` and `.writes(...)`, because a task may only attach a given `TaskBufferView` once - buffers can't be sliced, so a second attachment for the same view would be redundant (see [Additional Usage Rules](/wiki/taskgraph-how-why/#additional-usage-rules)).
+`.reads_writes(...)` is used here instead of a separate `.reads(...)` and `.writes(...)`, because a task may only attach a given `TaskBufferView` once - buffers can't be sliced, so a second attachment for the same view would be redundant (see [TaskGraph — How and Why](/wiki/taskgraph-how-why/)).
 
 `task_particles` now has two attachments, in the order their tasks were recorded: "init particles" writes it, then "update particles" reads and writes it. TaskGraph builds a *timeline* for `task_particles` from these attachments. A write followed by a read/write forms an ordering dependency, so TaskGraph **must** run "init particles" before "update particles" - there is no other valid order.
 
@@ -182,7 +182,7 @@ This leaves "render background" as the only task without a dependency on `{init,
 
 `{init -> update -> render particles, render background} -> composite`
 
-This is the same reordering behavior described in [Usage Implications](/wiki/taskgraph-how-why/#usage-implications) on the main TaskGraph page, just built up from real resources instead of abstract `TaskA`/`TaskB`/`TaskC` names.
+This is the same reordering behavior described in [TaskGraph — How and Why](/wiki/taskgraph-how-why/) on the main TaskGraph page, just built up from real resources instead of abstract `TaskA`/`TaskB`/`TaskC` names.
 
 ## 7. External Task Resources
 
@@ -353,7 +353,7 @@ while (running) {
 
 `recreate_graph()` runs only when something structurally changes (resolution, pipelines, etc.). Every other frame is just `set_image` + `execute` - no rebuilding, no re-recording.
 
-For a side-by-side look at what the barrier and layout transition code in this loop would look like written by hand versus what TaskGraph generates for you, see [TaskGraph — How and Why: Manual vs. Automatic Synchronization](/wiki/taskgraph-how-why/#manual-sync-vs-taskgraph).
+For a side-by-side look at what the barrier and layout transition code in this loop would look like written by hand versus what TaskGraph generates for you, see [TaskGraph — How and Why](/wiki/taskgraph-how-why/).
 
 ## 10. Built-in Convenience Tasks
 
@@ -571,7 +571,7 @@ task_graph.add_task(daxa::Task::Compute("render background right")
     .executes([=](daxa::TaskInterface ti) { /* ... dispatch over the right half ... */ }));
 ```
 
-These two tasks may now run in any order or concurrently. Reads are always implicitly concurrent - multiple readers never need ordering against each other - so `.writes_concurrent(...)` and `.reads_writes_concurrent(...)` exist specifically for the write case (see [Concurrent Access](/wiki/taskgraph-how-why/#concurrent-access)). Any task that subsequently reads `task_background` still forms a normal dependency on both writers; it just doesn't care which ran first.
+These two tasks may now run in any order or concurrently. Reads are always implicitly concurrent - multiple readers never need ordering against each other - so `.writes_concurrent(...)` and `.reads_writes_concurrent(...)` exist specifically for the write case (see [TaskGraph — How and Why](/wiki/taskgraph-how-why/)). Any task that subsequently reads `task_background` still forms a normal dependency on both writers; it just doesn't care which ran first.
 
 The concurrent access flags are also the right choice when multiple tasks write to the same resource but coordinate internally rather than through TaskGraph - for example, several compute dispatches appending to a shared buffer using atomic operations. TaskGraph sees them all writing the same resource and would otherwise serialize them; marking the attachment concurrent tells it that those tasks have their own synchronization and do not need to be ordered against each other.
 
@@ -781,7 +781,7 @@ task_graph.add_task(daxa::Task::Compute("render particles")
 
 Each resource now appears in **five** places: **(1)** the attachment declaration, **(2)** the push constant piping, **(3)** the push constant struct field, **(4)** the function parameter, and **(5)** passing the view at the call site. The real problem is that **(1)** and **(3)** are two separate descriptions of the same thing - one says "this task accesses resource X", the other says "resource X has this shader type and name" - and they must be kept in sync manually. **(2)**, **(4)**, and **(5)** are purely mechanical piping that follows from the other two.
 
-[Task Heads](/wiki/taskgraph-how-why/#taskhead-and-attachment-shader-blob) fix this by merging **(1)** and **(3)** into a single centralized description per resource, eliminating **(2)** entirely, and removing **(4)** and **(5)** by making attachments accessible via `AT.resource_name` inside any callback without passing views as parameters. The head macros form a small DSL where each line simultaneously declares the attachment and its shader-side name and type - one place to change when a resource changes. From this declaration the macros generate two things:
+[TaskGraph — How and Why](/wiki/taskgraph-how-why/) fix this by merging **(1)** and **(3)** into a single centralized description per resource, eliminating **(2)** entirely, and removing **(4)** and **(5)** by making attachments accessible via `AT.resource_name` inside any callback without passing views as parameters. The head macros form a small DSL where each line simultaneously declares the attachment and its shader-side name and type - one place to change when a resource changes. From this declaration the macros generate two things:
 
 - **`RenderParticlesHead::Info`** — a C++ struct holding attachment metadata that TaskGraph uses for synchronization and to identify which task resources correspond to which slots
 - **A shader-side struct** — with one field per attachment, typed to match (`daxa_BufferPtr(Particle)` for a buffer pointer, `daxa_ImageViewId` for an image id, etc.), ready to be embedded in a push constant and accessed directly in the shader

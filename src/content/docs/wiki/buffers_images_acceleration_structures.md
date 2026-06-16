@@ -124,7 +124,7 @@ daxa::ImageViewId image_view = device.create_image_view({
 
 Every image also has an implicit default view covering its full extent, available via `image.default_view()`.
 
-See [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/) for getting pixel data into an image and generating mip chains, and [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#renderpass-attachments) for using images/image views as render attachments.
+See [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/) for getting pixel data into an image and generating mip chains, and [Pipelines](/wiki/pipelines/#color-attachments-and-blending) for using images/image views as render attachments.
 
 ### Samplers
 
@@ -148,7 +148,7 @@ daxa::TlasId tlas = device.create_tlas({
 });
 ```
 
-Building the actual acceleration structure contents happens later via build commands on a `daxa::CommandRecorder` (see [Command Recording & Submission](/wiki/command-recording/)). Once built, a TLAS is bound for tracing via [Pipelines & Renderpasses: Ray Tracing Pipelines](/wiki/pipelines-and-renderpasses/#ray-tracing-pipelines).
+Building the actual acceleration structure contents happens later via build commands on a `daxa::CommandRecorder` (see [Command Recording & Submission](/wiki/command-recording/)). Once built, a TLAS is bound for tracing via [Pipelines: Ray Tracing Pipelines](/wiki/pipelines/#ray-tracing-pipelines).
 
 ## Memory Blocks: Manual Suballocation & Aliasing
 

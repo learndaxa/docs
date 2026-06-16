@@ -99,7 +99,7 @@ device.submit_commands({
 
 `dispatch_indirect` is also available for dispatches whose size is computed on the GPU.
 
-See [Pipelines & Renderpasses](/wiki/pipelines-and-renderpasses/#compute-pipelines) for creating `compute_pipeline`, and [Shader Integration](/wiki/shader-integration/#push-constants) for how `MyComputePush` and bindless image/buffer handles are declared and read on the shader side.
+See [Pipelines](/wiki/pipelines/#compute-pipelines) for creating `compute_pipeline`, and [Shader Integration](/wiki/shader-integration/#push-constants) for how `MyComputePush` and bindless image/buffer handles are declared and read on the shader side.
 
 ### Raster pass
 
