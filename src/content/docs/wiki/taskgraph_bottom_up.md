@@ -707,17 +707,29 @@ This also works with task heads: pass `daxa::NullTaskImage` (or `daxa::NullTaskB
 All the task types used so far — `Task::Compute`, `Task::Raster`, `Task::Transfer`, `Task::RayTracing` — have a fixed default stage that plain `.reads(...)` / `.writes(...)` attach to. `daxa::Task` without a type suffix creates a **general task**, which has no default stage at all:
 
 ```c++
+using namespace daxa::TaskAccessConsts;
+
+// Determined ahead of the add_task call - could just as well come from a config
+// flag, a material's resource list, or anything else known before recording.
+daxa::TaskAccess particles_access = COMPUTE_SHADER::READ;
+daxa::TaskAccess blas_access      = supports_ray_tracing ? RAY_TRACING_SHADER::READ : COMPUTE_SHADER::READ;
+
 task_graph.add_task(daxa::Task("mixed work")
-    .uses(TaskAccessConsts::COMPUTE_SHADER::READ,  task_particles)
-    .uses(TaskAccessConsts::RAY_TRACING_SHADER::READ, task_blas)
-    .uses(TaskAccessConsts::COLOR_ATTACHMENT,      task_color)
+    .compute_shader.writes(task_particles)
+    .color_attachment.reads_writes(task_color)
+    .uses(particles_access, task_particles_history)
+    .uses(blas_access,      task_blas)
     .executes([=](daxa::TaskInterface ti) { /* ... */ }));
 ```
+
+Note that even on a general task, attachments whose stage and access are fixed at the call site still read best as explicit stage modifiers - `.compute_shader.writes(...)`, `.color_attachment.reads_writes(...)` - rather than spelling the same fixed access out through `.uses(TaskAccessConsts::COMPUTE_SHADER::WRITE, ...)`. `.uses(...)` earns its place once the access itself is a variable rather than a constant, as with `particles_access` and `blas_access` above: each is computed once, before the task is even recorded, and `.uses(...)` is simply handed the result.
 
 Because there is no default, every attachment must go through `.uses(TaskAccess, ...)` or a stage sub-object — the plain `.reads(...)` / `.writes(...)` helpers are not available. This makes general tasks more verbose, but they are the right choice when:
 
 - **Mixed pipeline work**: a single task that touches resources from multiple pipeline stages — a raster pass that also dispatches a compute shader inline, or a ray tracing task that additionally reads from a compute-written buffer at a stage that the `RayTracing` type would not default to correctly.
 - **Programmatic tasks**: tasks built from data at runtime, where the stages and accesses aren't known until graph recording time and must be assembled by code.
+
+This is also what makes it practical to generate a task fully data-driven and generically: since `.uses(TaskAccess, view)` takes both arguments as plain values, a task's entire attachment list can be built by iterating over a runtime description - a list of `(TaskAccess, TaskBufferView/TaskImageView)` pairs loaded from a material, a render-graph config, or any other data source - calling `.uses(...)` once per entry in a loop. None of the named accessors (`.reads(...)`, `.color_attachment.writes(...)`, etc.) can do this, since each is tied to a stage/access fixed at compile time; `.uses(...)` is the only mechanism general enough to drive a task's shape entirely from data.
 
 General tasks are also the default for task heads declared with `DAXA_DECL_TASK_HEAD_BEGIN` (as opposed to `DAXA_DECL_COMPUTE_TASK_HEAD_BEGIN` etc.), for the same reason: the head DSL already specifies the exact stage for each attachment via the access constants in each macro line, so no per-task-type default is needed or useful.
 
