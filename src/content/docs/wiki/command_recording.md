@@ -390,3 +390,11 @@ device.present_frame({
 ```
 
 See [Swapchain](/wiki/swapchain/#synchronizing-a-frame) for where `current_acquire_semaphore()`/`current_present_semaphore()`/`current_timeline_pair()` come from, and [Swapchain: Full Example](/wiki/swapchain/#full-example-a-frame-loop) for a complete acquire/render/present frame loop.
+
+## Best practices
+
+Creating a `daxa::CommandRecorder` is not free on the CPU - it allocates and begins a `VkCommandBuffer`, which involves driver-side bookkeeping. Likewise, every `complete_current_commands()` call does real driver-side work to finalize the command buffer, and every `command_lists` switch on the GPU (ending one `VkCommandBuffer` and beginning the next) has its own cost as the GPU's command processor has to flush and reload state between lists. `submit_commands` itself is more expensive still, on both the CPU and the GPU.
+
+Because of this, batch as much work as possible into each recorder, list, and submit, rather than creating a new one for every small piece of work - a frame with dozens of tiny recorders/lists/submits pays that fixed overhead dozens of times for no benefit. Since a `CommandRecorder` only needs to live as long as it takes to build the `ExecutableCommandList`s for one submit, the ideal number of command recorders in a frame is roughly the number of submits. Keep submits below 4 per frame where possible - a simple, common split is one submit for uploads and one for the main frame's work - and let the recorder count follow from that. As a rule of thumb, a frame should ideally use less than 8 command recorders.
+
+Going beyond that can be justified once you reach async compute/transfer, where extra submits on separate queues let unrelated work overlap with the main queue - but that's an advanced topic, and not something to reach for by default.

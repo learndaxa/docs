@@ -56,7 +56,7 @@ daxa::TaskBufferView task_particles = task_graph.create_task_buffer({
 });
 ```
 
-This doesn't allocate anything by itself - `task_particles` is just a handle TaskGraph can use to track usages. By default (`TaskResourceLifetimeType::TRANSIENT`), TaskGraph allocates and manages the real buffer behind it automatically. Other lifetime types and external resources are covered in sections 7 and 11.
+This doesn't allocate anything by itself - `task_particles` is just a handle TaskGraph can use to track usages. By default (`TaskResourceLifetimeType::TRANSIENT`), TaskGraph allocates and manages the real buffer behind it automatically. Other lifetime types and external resources are covered in sections 7 and 12.
 
 Now give a task an *attachment* referencing it:
 
@@ -269,26 +269,7 @@ if (streamer_requested_expansion) {
 
 This flexibility is what makes external resources so powerful: resources can change in response to runtime events while the graph's task structure stays stable. TaskGraph retains almost all precomputed data for sync, ordering, and barrier generation while adapting only what changed.
 
-## 8. Early Tips for Attachment Granularity
-
-Not every GPU resource needs to be a task resource. TaskGraph only provides value where there are synchronization or ordering requirements to manage - so only give it resources that actually have those.
-
-**Track these:**
-- Resources with transient lifetimes that may alias across frames: scratch buffers, intermediate render targets, temporary compute storage
-- Resources written at least once per frame, since writes create ordering requirements against subsequent reads
-
-**Don't track static asset data:**
-Mesh buffers, index buffers, material parameters, textures - anything loaded once and read many times - should stay out of the graph. The set of assets changes frequently, but their content per frame is constant. There are no write dependencies to enforce, so TaskGraph has nothing to contribute. Tracking them would only add noise.
-
-**When assets do need GPU processing:**
-Asset upload, decompression, or format conversion are the exception. For those, consider:
-- A **separate lightweight task graph** dedicated to asset processing, isolated from the main frame graph
-- **Manual synchronization** for simple one-off operations - asset processing is often straightforward enough that a hand-written barrier is less overhead than tracking it in a full graph
-- **An async queue** for work that doesn't need to block the main rendering queue at all
-
-Keeping asset processing out of the main graph means the main graph stays small, fast to analyze, and contains only the dependencies that actually matter each frame.
-
-## 9. A Complete Frame Loop
+## 8. A Complete Frame Loop
 
 Putting it all together: the graph is built once and reused across frames. The swapchain image is an `ExternalTaskImage` (covered in section 7), updated each frame via `set_image()` before `execute()`. The graph itself is only recreated when settings actually change:
 
@@ -355,7 +336,34 @@ while (running) {
 
 For a side-by-side look at what the barrier and layout transition code in this loop would look like written by hand versus what TaskGraph generates for you, see [TaskGraph — How and Why](/wiki/taskgraph-how-why/).
 
-## 10. Built-in Convenience Tasks
+## 9. Early Tips for Attachment Granularity
+
+Not every GPU resource needs to be a task resource. TaskGraph only provides value where there are synchronization or ordering requirements to manage - so only give it resources that actually have those.
+
+**Track these:**
+- Resources with transient lifetimes that may alias across frames: scratch buffers, intermediate render targets, temporary compute storage
+- Resources written at least once per frame, since writes create ordering requirements against subsequent reads
+
+**Don't track static asset data:**
+Mesh buffers, index buffers, material parameters, textures - anything loaded once and read many times - should stay out of the graph. The set of assets changes frequently, but their content per frame is constant. There are no write dependencies to enforce, so TaskGraph has nothing to contribute. Tracking them would only add noise.
+
+**When assets do need GPU processing:**
+Asset upload, decompression, or format conversion are the exception. For those, consider:
+- A **separate lightweight task graph** dedicated to asset processing, isolated from the main frame graph
+- **Manual synchronization** for simple one-off operations - asset processing is often straightforward enough that a hand-written barrier is less overhead than tracking it in a full graph
+- **An async queue** for work that doesn't need to block the main rendering queue at all
+
+Keeping asset processing out of the main graph means the main graph stays small, fast to analyze, and contains only the dependencies that actually matter each frame.
+
+## 10. Tips: When *Not* to Use a TaskGraph
+
+Daxa is built in layers: a thin device/recorder layer for direct control, and TaskGraph on top, purpose-built for organizing and optimizing a *large set* of rendering passes whose dependencies benefit from being resolved automatically. It's not meant as a do-it-all abstraction - outside that use case, the direct `CommandRecorder` layer is the right tool.
+
+Creating a `daxa::TaskGraph` does real work (bookkeeping, analyzing tasks at `complete()`), which is negligible once amortized across many frames or tasks - the normal case - but wasteful for a single, simple, one-off stream like background work or asset streaming. The same applies when a task's sync is just a handful of fixed barriers that never change: TaskGraph's value comes from reordering and synchronizing non-trivial, evolving dependencies, so if none of its other features (aliasing, persistent/double-buffered resources, reordering, async-queue sectioning) are needed either, it adds bookkeeping without buying anything - and manual sync on a plain `CommandRecorder` is simply simpler. That manual route is also fairly ergonomic in Daxa already: no explicit image layouts to track (everything stays in `GENERAL`, see [Command Recording & Submission](/wiki/command-recording/#pipeline-barriers)), no subresource ranges on image barriers, and successive barriers auto-batch into one `vkCmdPipelineBarrier2`.
+
+**Example: a simple buffer/image upload with no processing.** A staging-buffer copy into a device-local buffer or image, with no mip generation or follow-up work, needs only two barriers: one combining "make the host write visible" with "transition to `GENERAL`" (`src_access`/`dst_access` and `layout_operation` are all part of one `pipeline_image_barrier` call - buffers just skip the layout part), and one making the copy's write visible to later reads. That's simple enough to write by hand (see [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/)). This doesn't change with scale either: whether uploading 1 texture or 50, every one needs that exact same fixed pair of barriers - you already know this upfront, so tracking each as a task resource and making TaskGraph re-derive it every time is pure unneeded boilerplate. This is exactly the kind of isolated, trivially-synchronized work that belongs on the direct `CommandRecorder` layer, not inside a graph meant for large sets of interdependent passes.
+
+## 11. Built-in Convenience Tasks
 
 TaskGraph provides a handful of pre-built tasks for the most common transfer operations. Instead of `add_task` with a manual callback, call them directly on the graph:
 
@@ -393,7 +401,7 @@ task_graph.copy_image_to_image({
 
 Each of these internally calls `add_task`, so they participate in the normal dependency tracking and synchronization - no special handling needed. They just save you from writing a Transfer callback by hand for the common cases.
 
-## 11. Resource Lifetime Types
+## 12. Resource Lifetime Types
 
 Both `create_task_buffer` and `create_task_image` accept a `lifetime_type` field that controls how TaskGraph allocates and manages the backing GPU memory. Choosing the right type affects memory usage, frame-to-frame data persistence, and whether aliasing is possible.
 
@@ -401,7 +409,7 @@ Both `create_task_buffer` and `create_task_image` accept a `lifetime_type` field
 
 Transient resources are allocated during `execute()` and their memory is returned once execution finishes. They have no guaranteed content between executions — every frame starts with undefined data. This is the right default for any resource that starts fresh each frame: intermediate render targets, scratch buffers, temporary compute storage.
 
-Because transient lifetimes are scoped to a single execution, TaskGraph can analyze which transients are alive at the same time and alias their memory. With `alias_transients = true` in `TaskGraphInfo` (see section 18), two transients whose lifetimes do not overlap share the same physical allocation. Combined with `optimize_transient_lifetimes = true`, TaskGraph reorders tasks to shrink each transient's alive window and maximize aliasing opportunities. On complex graphs this can reduce peak VRAM usage significantly. `get_resource_memory_block_size()` returns the current size of the shared block so you can observe the effect.
+Because transient lifetimes are scoped to a single execution, TaskGraph can analyze which transients are alive at the same time and alias their memory. With `alias_transients = true` in `TaskGraphInfo` (see section 19), two transients whose lifetimes do not overlap share the same physical allocation. Combined with `optimize_transient_lifetimes = true`, TaskGraph reorders tasks to shrink each transient's alive window and maximize aliasing opportunities. On complex graphs this can reduce peak VRAM usage significantly. `get_resource_memory_block_size()` returns the current size of the shared block so you can observe the effect.
 
 ### PERSISTENT
 
@@ -453,7 +461,7 @@ The canonical use cases are temporal anti-aliasing history, screen-space ambient
 
 External resources are not managed by TaskGraph at all — they are pre-existing `BufferId`s and `ImageId`s that you register into the graph with `register_buffer` / `register_image`. They are the mechanism for feeding swapchain images, streamer buffers, or any externally-owned resource into the graph. This was covered in section 7.
 
-## 12. TaskInterface Features
+## 13. TaskInterface Features
 
 Every task callback receives a `daxa::TaskInterface ti`. Beyond `ti.recorder` for recording commands, `ti` exposes several other members worth knowing.
 
@@ -497,7 +505,7 @@ Allocations are only valid for the duration of the task. The device address and 
 
 The allocator is backed by a fixed-size ring buffer (128 KiB by default, configurable via `staging_memory_pool_size` in `TaskGraphInfo`). It is intended for small, per-task scratch data — not large uploads. `allocate()` returns `std::nullopt` if the pool is exhausted for this frame, so always check the return value. The pointer itself is null if the pool was disabled (`staging_memory_pool_size = 0`), so guard with `if (ti.allocator)` when using it in reusable code.
 
-## 13. Granular Attachment Access
+## 14. Granular Attachment Access
 
 The plain `.reads(...)`, `.writes(...)`, and `.reads_writes(...)` methods attach a resource at the task's *default stage* - `COMPUTE_SHADER` for `Task::Compute`, `TRANSFER` for `Task::Transfer`, and so on. That default covers the vast majority of cases. When you need a different stage, two mechanisms let you be more specific.
 
@@ -511,9 +519,11 @@ task_graph.add_task(daxa::Task::Raster("render scene")
     .executes([=](daxa::TaskInterface ti) { /* ... */ }));
 ```
 
-`color_attachment` and `indirect_cmd` are typed accessors that only expose access modes that make sense for their stage — `indirect_cmd` does not expose `.writes(...)` because indirect command buffers are always read-only.
+`color_attachment` and `indirect_cmd` are typed accessors that only expose access modes that make sense for their stage — `indirect_cmd` does not expose `.writes(...)` because indirect command buffers are always read-only. Beyond `COLOR_ATTACHMENT` and `INDIRECT_COMMAND_READ`, two more stages are worth knowing by name since they come up often enough to need explicit mention: `DEPTH_ATTACHMENT`/`DEPTH_ATTACHMENT_READ` for the depth/stencil attachment (read-write for normal depth testing, read-only when only sampled in, e.g., as a shadow map), and `HOST`, which isn't a real GPU stage at all but a hint TaskGraph uses to track host (CPU) memory visibility - relevant whenever a resource is written or read directly by the CPU, such as upload staging.
 
-**`.samples(...)`** is another important accessor worth calling out explicitly. When a task samples an image through a sampler (as opposed to a plain load), it must be attached with `.samples(...)` rather than `.reads(...)`:
+It's also possible to attach at a specific *shader* stage instead of the task's default - `VERTEX_SHADER`, `FRAGMENT_SHADER`, and so on (used via `.uses(...)`, covered next). Some GPUs can overlap pipeline stages that don't depend on each other, so this level of granularity can matter: a raster task whose vertex shader reads one buffer and fragment shader reads a result written by an earlier compute task only needs to be ordered against the compute write through its fragment-shader read - leaving the vertex shading free to overlap with that compute work instead of waiting on it unnecessarily.
+
+`.reads(...)`, `.writes(...)`, and `.reads_writes(...)` all default to **storage access** - `STORAGE_IMAGE` for images, `STORAGE_BUFFER` for buffers - the kind behind `imageLoad`/`imageStore` and buffer-device-address reads/writes in a shader. `.samples(...)` is the one exception: it's used instead of `.reads(...)` when a task samples an image through a sampler rather than loading it directly:
 
 ```c++
 task_graph.add_task(daxa::Task::Raster("render scene")
@@ -524,7 +534,9 @@ task_graph.add_task(daxa::Task::Raster("render scene")
 
 This distinction matters because TaskGraph uses the access type to inform image resource creation: an image attached with `.samples(...)` at any point in the graph will be created with the `SAMPLED` usage flag set, which Vulkan requires before sampling is legal. Using `.reads(...)` for a sampled image will silently omit that flag and produce undefined behavior at runtime. Always use `.samples(...)` for images accessed through a sampler.
 
-## 14. [ADVANCED] Custom Attachment Access with `.uses()`
+`.writes(...)` and `.reads_writes(...)` also each have a `_concurrent` counterpart (`.writes_concurrent(...)`, `.reads_writes_concurrent(...)`) that opts a write out of being ordered against other writes to the same view - see section 16, "Letting Two Writers Run Concurrently", for when and why to use them.
+
+## 15. [ADVANCED] Custom Attachment Access with `.uses()`
 
 `.uses(TaskAccess, views...)` accepts a `TaskAccess` value directly, which is usually not needed - the named accessors and sub-objects cover virtually all practical cases. Where it becomes useful is when the access needs to be determined programmatically: selecting between read-only and read-write at graph recording time based on a flag, picking a stage from a variable, or sharing an access constant defined elsewhere. `.uses()` gives you a single point to pass whatever `TaskAccess` you have computed:
 
@@ -555,7 +567,7 @@ if (pass_also_updates_buffer)
 task.uses(access, task_buffer);
 ```
 
-## 15. [ADVANCED] Letting Two Writers Run Concurrently
+## 16. [ADVANCED] Letting Two Writers Run Concurrently
 
 Suppose "render background" from section 6 is split into two tasks that each paint half of `task_background` independently. Both attach the same view, so by default TaskGraph forms a write → write dependency and forces them to run sequentially - even though they touch disjoint pixels and never interfere.
 
@@ -575,7 +587,7 @@ These two tasks may now run in any order or concurrently. Reads are always impli
 
 The concurrent access flags are also the right choice when multiple tasks write to the same resource but coordinate internally rather than through TaskGraph - for example, several compute dispatches appending to a shared buffer using atomic operations. TaskGraph sees them all writing the same resource and would otherwise serialize them; marking the attachment concurrent tells it that those tasks have their own synchronization and do not need to be ordered against each other.
 
-## 16. [ADVANCED] Image Subresource Views: `.mips()` and `.layers()`
+## 17. [ADVANCED] Image Subresource Views: `.mips()` and `.layers()`
 
 `TaskImageView` has two chainable methods that restrict which part of a task image the view covers:
 
@@ -626,7 +638,7 @@ This is intentional, for two reasons:
 
 2. **Transient allocation.** If different subresources of the same image had genuinely different lifetimes, TaskGraph could not treat the image as a single transient allocation and alias its memory — it would need to track each subresource independently, breaking the aliasing model entirely. If two subresources of a conceptual "image" are truly accessed so differently that their lifetimes diverge, the right answer is to create them as two separate task images rather than fighting the granularity of the tracking system.
 
-## 17. [ADVANCED] Optional Task Views
+## 18. [ADVANCED] Optional Task Views
 
 Some tasks have genuinely optional resource parameters - a post-process pass that can optionally read a debug overlay, a compute task that conditionally writes to an auxiliary buffer, or a head shared between variants where some slots may not always be needed. The natural instinct is to leave the attachment slot empty, but Daxa validates that all registered attachments are backed by a real task view and will error on an empty one.
 
@@ -664,7 +676,7 @@ void main()
 
 This also works with task heads: pass `daxa::NullTaskImage` (or `daxa::NullTaskBuffer`) into the corresponding slot in `.head_views({...})` and the same rules apply - the slot is excluded from tracking and reads as zero inside the callback.
 
-## 18. [ADVANCED] TaskGraph Construction Options
+## 19. [ADVANCED] TaskGraph Construction Options
 
 `TaskGraphInfo` has a number of fields beyond `device` and `name`. Most stay at their defaults; this section covers what they do and when to change them.
 
@@ -690,7 +702,7 @@ This also works with task heads: pass `daxa::NullTaskImage` (or `daxa::NullTaskB
 
 **Default queue** (`default_queue`, default: `QUEUE_MAIN`): the Vulkan queue used for task submission. Individual tasks can override this with `.uses_queue(...)` at recording time.
 
-## 19. [ADVANCED] The General Task
+## 20. [ADVANCED] The General Task
 
 All the task types used so far — `Task::Compute`, `Task::Raster`, `Task::Transfer`, `Task::RayTracing` — have a fixed default stage that plain `.reads(...)` / `.writes(...)` attach to. `daxa::Task` without a type suffix creates a **general task**, which has no default stage at all:
 
@@ -709,7 +721,7 @@ Because there is no default, every attachment must go through `.uses(TaskAccess,
 
 General tasks are also the default for task heads declared with `DAXA_DECL_TASK_HEAD_BEGIN` (as opposed to `DAXA_DECL_COMPUTE_TASK_HEAD_BEGIN` etc.), for the same reason: the head DSL already specifies the exact stage for each attachment via the access constants in each macro line, so no per-task-type default is needed or useful.
 
-## 20. [ADVANCED] From an Inline Task to a Task Head
+## 21. [ADVANCED] From an Inline Task to a Task Head
 
 In a large taskgraph, writing every callback as an inline lambda starts to clutter the graph recording. The graph recording ideally reads as a high-level view of the frame - which tasks run, what resources they touch, in what order. Inline lambdas filled with pipeline binding, push constants, and dispatch calls turn into noise there; you are no longer reading the frame, you are reading task implementations. Many people, myself included, prefer to define callbacks as named functions in a separate place - typically a feature-specific `.cpp` file that lives alongside the shader it drives. This improves encapsulation and keeps the graph recording focused on what it is actually for.
 
@@ -841,7 +853,7 @@ This also eliminates an entire class of bugs. With inline tasks, forgetting to a
 
 Everything covered so far - timelines, dependencies, reordering, concurrent writes - works identically for head tasks. The only thing that changes is how attachments and shader-side handles are declared.
 
-## 21. [ADVANCED] Special Task Head Attachments
+## 22. [ADVANCED] Special Task Head Attachments
 
 The head macros offer several variants of `DAXA_TH_IMAGE_*` and `DAXA_TH_BUFFER_*` that control what ends up in the shader blob and how much push constant space it costs. Choosing the right variant matters when push constants are tight or when the task needs per-mip shader access.
 
@@ -892,7 +904,7 @@ void main()
 
 `DAXA_TH_IMAGE_INDEX_MIP_ARRAY` and `DAXA_TH_IMAGE_TYPED_MIP_ARRAY` are the same concept in the index and Slang-typed forms respectively, saving push constant space in the same way as their non-array counterparts.
 
-## 22. [ADVANCED] Async Compute and Transfer
+## 23. [ADVANCED] Async Compute and Transfer
 
 Modern GPUs expose multiple independent command queues: a main queue that can run graphics, compute, and transfer work, plus dedicated async compute queues and async transfer queues. Work submitted to different queues can run concurrently on physically separate parts of the GPU.
 
@@ -903,6 +915,12 @@ Daxa exposes these as `daxa::Queue` constants:
 - `QUEUE_TRANSFER_0` and `QUEUE_TRANSFER_1` — up to two async DMA transfer queues
 
 Not all GPUs expose all queues. Whether a queue is available depends on the hardware and driver; query queue support through the device before relying on a specific queue being present.
+
+**When async queues actually help.** Moving work to a second queue is only worth the added complexity in a few recurring scenarios:
+
+- **Long-running, mostly self-contained GPU work** - acceleration structure builds are the canonical example. They take a while, and once their inputs are ready they don't need anything else from the main queue until the result is read back.
+- **Work that is genuinely independent and light on shared GPU resources** - streaming asset uploads over an async transfer queue, for instance, since they mostly move memory rather than contend for compute/raster throughput, and have few dependencies on the rest of the frame.
+- **Overlapping long-running work with barrier-heavy work on another queue.** Barriers are queue-local: a `pipeline_barrier` on the main queue only stalls the main queue's own command stream, it has no effect on a queue running async compute or transfer. So background work on a second queue keeps making progress straight through main-queue barriers that would otherwise stall it if it were recorded inline on the main queue.
 
 **Cross-queue synchronization requires explicit submit points.** Unlike same-queue synchronization (which TaskGraph handles fully automatically with barriers), synchronization *between* queues in PC-level graphics APIs like Vulkan requires semaphores tied to queue submissions — and submissions are expensive. TaskGraph does not auto-generate cross-queue submissions; those must be placed by the user. Instead, TaskGraph models async compute as *sections between submissions*: tasks on different queues that are recorded between two submit calls are allowed to diverge and run concurrently, then reconverge at the next submit boundary.
 
@@ -935,3 +953,9 @@ The `default_queue` field in `TaskGraphInfo` sets the queue for all tasks that d
 TaskGraph has extensive validation for cross-queue misuse. Writing to the same resource on two different queues between submit points — where no semaphore can be inserted — is caught and reported as an error, since there is no safe way to order those accesses without a submission boundary between them.
 
 The main practical consideration is that async compute and transfer queues cannot run arbitrary commands — compute queues cannot issue draw calls, and transfer queues can only issue copy/clear operations. TaskGraph does not validate this; assigning a raster task to a compute queue will produce a Vulkan validation error at runtime.
+
+## 24. [ADVANCED] Valid Multi-Queue Resource Access
+
+A resource accessed on only one queue at a time, at any given point, needs nothing special — every normal rule from earlier sections still applies as-is, the only constraint being that the access has to be legal for that queue (a compute queue still can't rasterize, for instance).
+
+The case that needs care is a resource accessed on *multiple* queues *at the same time*, within one submit-to-submit section. This is fine if and only if every one of those simultaneous accesses is concurrent — `.reads(...)`, `.samples(...)`, or a `_concurrent` write — **and** that same access stays unchanged across the entire section while the resource is shared between queues. Multiple queues reading (or sampling, or concurrently writing) the same resource at once is inherently safe, the same way it is within a single queue. But *changing* the access partway through - say, one queue reading while another is about to write - would need a sync point between the two queues to be safe, and a barrier can't do that: barriers are queue-local, so the only thing that can synchronize across queues is a submit, which is exactly the expensive operation TaskGraph is trying to avoid inserting automatically here. So instead, TaskGraph simply does not allow the access to change while a resource is shared across queues within a submit section - the access must stay the same across all of its uses until the next submit boundary.
