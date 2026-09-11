@@ -102,7 +102,7 @@ set(DAXA_ENABLE_UTILS_IMGUI ON)
 FetchContent_Declare(
     daxa
     GIT_REPOSITORY https://github.com/Ipotrick/Daxa
-    GIT_TAG        v3.0.2 # or a commit/branch
+    GIT_TAG        3.6 # a release tag, commit, or branch
 )
 FetchContent_MakeAvailable(daxa)
 ```

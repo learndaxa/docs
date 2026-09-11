@@ -36,7 +36,7 @@ Daxa is a relatively explicit API but has a lot of defaults via struct default m
 Nearly all Daxa objects can be assigned a debug name in creation. This name is used in the error messages we emit and is also displayed in tools like RenderDoc.
 
 :::tip[Learn more]
-`{}` here is a default-constructed `daxa::InstanceInfo` - see [Initialization and Device](/wiki/initialization-and-device/) for its fields (debug/validation flags, engine/app name).
+`{}` here is a default-constructed `daxa::InstanceInfo` - see [Initialization and Device](/wiki/initialization-and-device/) for its fields (instance flags, engine/app name). Note that Daxa does not enable the Vulkan validation layer for you - turn it on with the Vulkan Configurator from the Vulkan SDK, or by setting the environment variable `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`.
 :::
 
 ## Choosing and creating a device

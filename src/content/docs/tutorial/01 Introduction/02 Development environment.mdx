@@ -16,8 +16,8 @@ Follow these steps to set up your development environment for Daxa projects.
 
 Download the Daxa app template using one of the following options:
 
-- **Direct Download**: [Click here](https://codeload.github.com/learndaxa/daxa-app-template/zip/refs/heads/main) to download the template as a ZIP file.
-- **GitHub Repository**: Visit the [Daxa App Template GitHub Repository](https://github.com/learndaxa/tutorial-starting-point) to explore the project.
+- **Direct Download**: [Click here](https://codeload.github.com/learndaxa/tutorial-starting-point/zip/refs/heads/main) to download the template as a ZIP file.
+- **GitHub Repository**: Visit the [tutorial starting point repository](https://github.com/learndaxa/tutorial-starting-point) to explore the project.
 
 Once downloaded, extract the ZIP file and open the project in **VS Code**.
 
@@ -30,6 +30,9 @@ When prompted in VS Code, select the "Debug" preset for optimal setup.
 ### Notes on Daxa
 
 Daxa leverages **CMake** for project configuration. Dependencies - including Daxa itself - are fetched and built using CMake's [FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html) module, declared in `cmake/deps.cmake`. There's no separate package manager to install or configure; a working CMake + Ninja/MSVC/Clang setup and the Vulkan SDK are all you need.
+
+`cmake/deps.cmake` fetches [GLFW](https://www.glfw.org/) for windowing and a pinned Daxa release, and enables the Daxa utilities this tutorial uses (the GLSL pipeline manager) before Daxa is configured.
+We pull in daxa master in the tutorial code, however the code has last been tested on September 11, 2026 which would be between version 3.6 and 3.7
 
 :::note
 If you're new to CMake, refer to its official documentation:

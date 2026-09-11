@@ -14,7 +14,7 @@ See [Shader Integration](/wiki/shader-integration/#push-constants) for how push 
 
 To use push constants in our demo project, we need to create a new file: `src/shader/shared.inl` which will be a shared file between our main program and our shader file. Since Glsl is more or less a superset of basic C, we can use some code snippets in both languages.
 
-Since this document is treated as a header file in our C++ code, we can simply insert `#pragma once` at the top to make sure it's only included once. We also need to include the Daxa (Shader) API directly beneath it: `#include <daxa/daxa.inl>`. We'll also include `#include <daxa/utils/task_graph.inl>`, which is needed if you make use of the optional TaskGraph utilities covered later.
+Since this document is treated as a header file in our C++ code, we can simply insert `#pragma once` at the top to make sure it's only included once. We also need to include the Daxa (Shader) API directly beneath it: `#include <daxa/daxa.inl>`.
 
 We can now start to define common structs, etc. In this case, we need to create a new struct 'MyVertex' that can be pushed to the GPU. Our basic vertices will have a position and color attribute.
 
@@ -24,7 +24,6 @@ We can now start to define common structs, etc. In this case, we need to create 
 +
 +// Includes the Daxa API to the shader
 +#include <daxa/daxa.inl>
-+#include <daxa/utils/task_graph.inl>
 +
 +struct MyVertex
 +{
@@ -59,11 +58,20 @@ DAXA_DECL_BUFFER_PTR(MyVertex)
 +};
 ```
 
-To use this file in our main.cpp, we need to include it at the top: `#include "shader/shared.inl"`
-
 ## Pipeline manager
 
-In this tutorial, we will be using the pipeline manager, which is an additional Daxa feature that has to be explicitly imported with the header `<daxa/utils/pipeline_manager.hpp>` and also has to be enabled via Daxa's `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_GLSLANG` (or `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SLANG`) CMake option. Both of these steps are already done in the sample code.
+In this tutorial, we will be using the pipeline manager, which is an additional Daxa feature. It has to be enabled via Daxa's `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_GLSLANG` (or `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SLANG`) CMake option - the template's `cmake/deps.cmake` already turns on the GLSL one before fetching Daxa - and its header has to be included explicitly.
+
+Include the pipeline manager header, our new `shared.inl`, and `<iostream>` (which we'll use to print shader compile errors) at the top of `main.cpp`:
+
+```diff lang="cpp"
+// src/main.cpp
+#include "window.hpp"
++#include "shader/shared.inl"
++
++#include <daxa/utils/pipeline_manager.hpp>
++#include <iostream>
+```
 
 A pipeline manager compiles shader source (with hot-reloading and `#include` tracking) and constructs the underlying `daxa::RasterPipeline`/`daxa::ComputePipeline` objects for us - it's a development convenience layered on top of `device.create_raster_pipeline(...)` / `device.create_compute_pipeline(...)`.
 

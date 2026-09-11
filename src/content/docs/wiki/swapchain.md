@@ -32,10 +32,10 @@ daxa::Swapchain swapchain = device.create_swapchain({
 ```
 
 - `.native_window_info`: connects the swapchain to your OS window/surface. This comes from your windowing library - see [Creating a Window](/tutorial/drawing-a-triangle/creating-a-window/) for how to obtain it from GLFW.
-- `.surface_format`: a `daxa::SurfaceFormat`, which pairs a `daxa::Format` (e.g. `B8G8R8A8_SRGB`) with a `daxa::ColorSpace`. `device.choose_swapchain_surface_format({...})` picks a sensible default supported by your surface; pass `.preferred_formats` (ordered most to least preferred) if you care which one is chosen.
+- `.surface_format`: a `daxa::SurfaceFormat`, which pairs a `daxa::Format` (e.g. `B8G8R8A8_SRGB`) with a `daxa::ColorSpace`. `device.choose_swapchain_surface_format({...})` returns the first format your surface supports; pass `.preferred_formats` (ordered most to least preferred) if you care which one is chosen. There is no fallback: if none of the preferred formats are supported, the call fails.
 - `.present_mode`: how rendered images are handed off to the display. Defaults to `FIFO`. See [Present Modes](#present-modes) below.
 - `.present_operation`: a transform (rotation/mirroring) the presentation engine applies to the image before showing it. Defaults to `IDENTITY` (no transform), which is correct for almost all desktop setups - this mainly matters on mobile/embedded displays that are physically mounted in a rotated orientation.
-- `.image_usage`: usage flags for the swapchain images, same as for any other image (see [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/)). `TRANSFER_DST` is enough to `clear_image`/`copy_image_to_image` into the swapchain image; add `COLOR_ATTACHMENT` if you want to render into it directly with a raster pipeline.
+- `.image_usage`: usage flags for the swapchain images, same as for any other image (see [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/)). `TRANSFER_DST` is enough to `clear_image`/`copy_image_to_image` into the swapchain image. You don't need to add `COLOR_ATTACHMENT` to render into it directly with a raster pipeline - Daxa always adds that usage to swapchain images.
 - `.max_allowed_frames_in_flight`: how many frames the CPU is allowed to get ahead of the GPU. Defaults to `2`. See [Frames in Flight](#frames-in-flight) below.
 - `.queue_type`: which queue presents the swapchain images. Defaults to `daxa::QueueType::MAIN`.
 - `.name`: debug name, shown in validation messages and tools like RenderDoc.
@@ -90,8 +90,8 @@ Each frame, you acquire one of the swapchain's images, render into it, and prese
 daxa::ImageId swapchain_image = swapchain.acquire_next_image();
 if (swapchain_image.is_empty())
 {
-    // The swapchain is out of date (e.g. the window was minimized or
-    // resized between frames) - skip this frame.
+    // The swapchain is out of date (e.g. the window was resized
+    // between frames) - skip this frame.
     continue;
 }
 
@@ -103,7 +103,9 @@ device.present_frame({
 });
 ```
 
-`acquire_next_image()` may return an empty `ImageId` (`is_empty() == true`) if the swapchain can't currently provide an image - simply skip the frame and try again next iteration.
+`acquire_next_image()` returns an empty `ImageId` (`is_empty() == true`) when the swapchain can't currently provide an image - Vulkan reported it as out of date or suboptimal, or the surface was lost. Simply skip the frame and try again next iteration.
+
+A **minimized** window is *not* reported this way: its surface just has a size of zero, so acquiring and rendering would carry on with zero-sized images (and validation errors). Track minimization yourself - e.g. with `glfwSetWindowIconifyCallback` - and skip resizing and rendering while the window is minimized.
 
 ## Synchronizing a Frame
 
@@ -154,6 +156,12 @@ Putting it all together, a typical main loop looks like this:
 while (!window.should_close())
 {
     window.update();
+
+    // Nothing to render into while minimized (see Acquiring and Presenting Images above).
+    if (window.minimized)
+    {
+        continue;
+    }
 
     if (window.swapchain_out_of_date)
     {

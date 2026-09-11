@@ -19,7 +19,7 @@ GPUs don't execute commands the moment you call a function — they work through
 
 ### Acquiring the swapchain image
 
-Before recording any commands, we need to know which swapchain image to render into. `acquire_next_image` waits until a frame-in-flight slot is free and then reserves the next image. If the swapchain is unavailable (e.g. the window is minimized), it returns an empty `ImageId` and we skip the frame.
+Before recording any commands, we need to know which swapchain image to render into. `acquire_next_image` waits until a frame-in-flight slot is free and then reserves the next image. If the swapchain is out of date (e.g. the window was resized and the swapchain hasn't been recreated yet), it returns an empty `ImageId` and we skip the frame. A minimized window is *not* reported this way - its surface just has a size of zero - so we'll handle that case ourselves in [Finishing up](/tutorial/drawing-a-triangle/finishing-up/).
 
 ```diff lang="cpp"
 // src/main.cpp

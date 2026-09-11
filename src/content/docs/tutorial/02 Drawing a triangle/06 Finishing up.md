@@ -6,7 +6,9 @@ slug: "tutorial/drawing-a-triangle/finishing-up"
 
 ## Implementing the main loop
 
-With recording and submission in place, there are two remaining pieces to complete the frame loop: handling window resizes before acquiring an image, and reclaiming GPU resources at the end of each frame.
+With recording and submission in place, there are three remaining pieces to complete the frame loop: skipping frames while the window is minimized, handling window resizes before acquiring an image, and reclaiming GPU resources at the end of each frame.
+
+A minimized window's surface has a size of zero, so there is nothing to render into - and `acquire_next_image()` does not report this by returning an empty image. Instead, we check the `minimized` flag kept up to date by the iconify callback from [Creating a Window](/tutorial/drawing-a-triangle/creating-a-window/). While it's set, `window.update()` sleeps until the next window event, so skipping the frame doesn't spin the CPU.
 
 ```diff lang="cpp"
 // src/main.cpp
@@ -14,6 +16,12 @@ With recording and submission in place, there are two remaining pieces to comple
     {
         window.update();
 
++        // A minimized window has a zero-sized surface, so there is nothing to render into.
++        if (window.minimized)
++        {
++            continue;
++        }
++
 +        if (window.swapchain_out_of_date)
 +        {
 +            swapchain.resize();
@@ -74,8 +82,14 @@ Otherwise, you can manually run the CMake commands to configure, build, and then
 
 ```shell
 cmake --preset=Debug
-cmake --build build/Debug
-./build/Debug/learndaxa  # learndaxa.exe on Windows
+cmake --build build/Debug --parallel
+```
+
+Then run the executable. On Windows, CMake's Visual Studio generator puts binaries in a per-configuration subfolder:
+
+```shell
+./build/Debug/learndaxa              # Linux
+./build/Debug/Debug/learndaxa.exe    # Windows
 ```
 
 :::caution
@@ -83,7 +97,7 @@ The application must be **run from the repo root directory** - shader paths (`./
 :::
 
 :::tip[Learn more]
-See [Building](/wiki/building/) for what the `cl-x86_64-windows-msvc`/`gcc-x86_64-linux-gnu`-style presets used by Daxa itself look like, and how the `DAXA_ENABLE_UTILS_*` CMake options (used here to enable the pipeline manager and TaskGraph) work if you want to enable additional utilities like Dear ImGui in your own project.
+See [Building](/wiki/building/) for what the `cl-x86_64-windows-msvc`/`gcc-x86_64-linux-gnu`-style presets used by Daxa itself look like, and how the `DAXA_ENABLE_UTILS_*` CMake options (used here to enable the GLSL pipeline manager) work if you want to enable additional utilities like Dear ImGui in your own project.
 :::
 
 ## Final Code
@@ -159,6 +173,12 @@ int main(int argc, char const *argv[])
     while (!window.should_close())
     {
         window.update();
+
+        // A minimized window has a zero-sized surface, so there is nothing to render into.
+        if (window.minimized)
+        {
+            continue;
+        }
 
         if (window.swapchain_out_of_date)
         {
@@ -285,6 +305,12 @@ struct AppWindow {
             win->height = static_cast<u32>(size_y);
             win->swapchain_out_of_date = true;
         });
+
+        // When the window is minimized or restored, track it so the main loop can pause rendering
+        glfwSetWindowIconifyCallback(glfw_window_ptr, [](GLFWwindow *window, int iconified) {
+            auto *win = static_cast<AppWindow *>(glfwGetWindowUserPointer(window));
+            win->minimized = iconified == GLFW_TRUE;
+        });
     }
 
     ~AppWindow() {
@@ -324,8 +350,11 @@ struct AppWindow {
     }
 
     inline void update() const {
-        glfwPollEvents();
-        glfwSwapBuffers(glfw_window_ptr);
+        if (minimized) {
+            glfwWaitEvents(); // Nothing is visible - sleep until the next window event
+        } else {
+            glfwPollEvents();
+        }
     }
 
     inline GLFWwindow *get_glfw_window() const {
@@ -341,7 +370,6 @@ struct AppWindow {
 
 // Includes the Daxa API to the shader
 #include <daxa/daxa.inl>
-#include <daxa/utils/task_graph.inl>
 
 struct MyVertex
 {

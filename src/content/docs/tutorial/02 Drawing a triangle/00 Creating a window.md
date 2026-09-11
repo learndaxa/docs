@@ -137,6 +137,12 @@ struct AppWindow {
 +            win->height = static_cast<u32>(size_y);
 +            win->swapchain_out_of_date = true;
 +        });
++
++        // Set a callback to track when the window is minimized (iconified) or restored
++        glfwSetWindowIconifyCallback(glfw_window_ptr, [](GLFWwindow* window, int iconified) {
++            auto* win = static_cast<AppWindow*>(glfwGetWindowUserPointer(window));
++            win->minimized = iconified == GLFW_TRUE;
++        });
 +    }
 };
 ```
@@ -148,6 +154,7 @@ struct AppWindow {
 2. `glfwWindowHint()`: Configures the window. Setting `GLFW_CLIENT_API` to `GLFW_NO_API` means the window won't automatically use a graphics API like OpenGL.
 3. `glfwSetWindowUserPointer()`: Associates a user-defined pointer (our `AppWindow` instance) with the GLFW window, allowing us to reference the `AppWindow` object in callbacks.
 4. **Resize Callback**: Updates window dimensions and marks the swapchain as out-of-date whenever the window size changes.
+5. **Iconify Callback**: Keeps `minimized` up to date. A minimized window's surface has a size of zero, so there is nothing to render into - we'll use this flag to pause rendering in [Finishing up](/tutorial/drawing-a-triangle/finishing-up/).
 
 </details>
 
@@ -253,8 +260,11 @@ To simplify window management, implement utility methods for common tasks like m
 +    }
 +
 +    inline void update() const {
-+        glfwPollEvents();
-+        glfwSwapBuffers(glfw_window_ptr);
++        if (minimized) {
++            glfwWaitEvents(); // Nothing is visible - sleep until the next window event
++        } else {
++            glfwPollEvents();
++        }
 +    }
 +
 +    inline GLFWwindow* get_glfw_window() const {
@@ -277,9 +287,9 @@ To simplify window management, implement utility methods for common tasks like m
       This is a standard condition for exiting the main application loop and ensures proper cleanup before termination.
       :::
 3. `update()`:
-    - Handles event polling and buffer swapping.
-    - `glfwPollEvents()`: Processes all pending input events (e.g., mouse movement, keyboard presses).
-    - `glfwSwapBuffers()`: Swaps the front and back buffers to present the rendered frame. Always call this function once per frame to ensure smooth rendering and responsive input handling.
+    - `glfwPollEvents()`: Processes all pending window and input events (e.g., mouse movement, keyboard presses, resizes). Call it once per frame to keep the window responsive.
+    - `glfwWaitEvents()`: While the window is minimized there is nothing to render, so instead of polling (and spinning through the main loop) we block until the next window event, such as the window being restored or closed.
+    - Unlike in an OpenGL application, there is no `glfwSwapBuffers()` call: the window has no OpenGL context (`GLFW_NO_API`), and finished frames are presented through Daxa's swapchain instead.
 4. `get_glfw_window()`:
     - Provides direct access to the raw GLFWwindow* pointer for advanced interactions or integrations.
 

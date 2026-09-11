@@ -8,7 +8,7 @@ slug: "tutorial/drawing-a-triangle/creating-a-swapchain"
 
 In Daxa, the swapchain is a key element in rendering graphics, acting as a bridge between your application and the display. It's a collection of buffers used for displaying images on the screen. Unlike other/older APIs, Vulkan requires explicit management of these, which Daxa luckily handles for you.
 
-The following code sample creates a new swapchain using a `daxa::NativeWindowInfo`, which is supplied by your windowing library of choice via the `AppWindow::get_native_window_info()` helper we created earlier.
+The following code sample creates a new swapchain using a `daxa::NativeWindowInfo`, which is supplied by GLFW through the `AppWindow::get_native_window_info()` helper we created earlier.
 
 ```diff lang="cpp"
 // src/main.cpp
@@ -19,9 +19,9 @@ The following code sample creates a new swapchain using a `daxa::NativeWindowInf
 +        .native_window_info = window.get_native_window_info(),
 +        // We ask the device to pick a surface format for us. If you don't
 +        // care what format the swapchain images are in, you can just pass
-+        // the native window info and let Daxa pick a sensible default.
-+        // Optionally, `preferred_formats` can be supplied to influence
-+        // the selection.
++        // the native window info and Daxa picks the first format the
++        // surface supports. Optionally, `preferred_formats` can be
++        // supplied to control the selection.
 +        .surface_format = device.choose_swapchain_surface_format({
 +            .native_window_info = window.get_native_window_info(),
 +        }),
@@ -33,7 +33,9 @@ The following code sample creates a new swapchain using a `daxa::NativeWindowInf
     while (!window.should_close())
 ```
 
-`device.choose_swapchain_surface_format()` returns a `daxa::SurfaceFormat`, which simply pairs a `daxa::Format` with a `daxa::ColorSpace`. If you have a strong preference for a particular format, you can pass a list of `preferred_formats` (ordered from most to least preferred) and Daxa will pick the first one supported by the surface, falling back to a sensible default otherwise.
+`device.choose_swapchain_surface_format()` returns a `daxa::SurfaceFormat`, which simply pairs a `daxa::Format` with a `daxa::ColorSpace`. Without `preferred_formats`, Daxa returns the first format the surface reports. If you have a strong preference for a particular format, you can pass a list of `preferred_formats` (ordered from most to least preferred) and Daxa will pick the first one supported by the surface. There is no fallback: if none of the preferred formats are supported, the call fails.
+
+We only ask for `TRANSFER_DST` in `.image_usage`, yet we'll render straight into the swapchain images later - that works because Daxa always adds `COLOR_ATTACHMENT` usage to swapchain images.
 
 ### daxa::PresentMode
 
