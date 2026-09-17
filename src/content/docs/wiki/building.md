@@ -66,11 +66,12 @@ This is the same mechanism for every util: the CMake option (e.g. `DAXA_ENABLE_U
 | `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SLANG` | Slang shader compilation in the [Pipeline Manager](/wiki/pipeline-manager/), via a prebuilt Slang release. | [Pipeline Manager](/wiki/pipeline-manager/) |
 | `DAXA_ENABLE_UTILS_PIPELINE_MANAGER_SPIRV_VALIDATION` | Validates pipeline manager output with `SPIRV-Tools` (must be findable via `find_package`). | - |
 | `DAXA_ENABLE_UTILS_IMGUI` | `daxa/utils/imgui.hpp` - Dear ImGui + implot renderer integration. | - |
-| `DAXA_ENABLE_UTILS_FSR2` | `daxa/utils/fsr2.hpp` - AMD FSR2 upscaling. | - |
 | `DAXA_ENABLE_TESTS` | Builds the sample/test executables under `tests/` (also fetches GLFW). | - |
 | `DAXA_ENABLE_TOOLS` | Builds the `daxa_tools_compile_*` shader-precompilation helper executables. | - |
 | `DAXA_ENABLE_STATIC_ANALYSIS` | Runs `cppcheck`/`clang-tidy` over Daxa's sources during the build, if installed. | - |
 | `DAXA_USE_STATIC_CRT` | (MSVC only) Links Daxa against the static CRT (`/MT`/`/MTd`) instead of the default dynamic CRT. | - |
+
+`DAXA_ENABLE_UTILS_FSR2` (`daxa/utils/fsr2.hpp`, AMD FSR2 upscaling) exists as an option but is left out of the table on purpose: configuring with it currently fails, because the FSR2 sources link `ffx_sdk::ffx_sdk`, a target `cmake/deps.cmake` only declares under the unrelated `DAXA_ENABLE_UTILS_FSR3`. Don't enable it. It will be removed in the future
 
 All of these are plain CMake cache variables and default to `OFF` unless set. They must be set **before** Daxa's `CMakeLists.txt` runs - i.e. before `add_subdirectory(...)` or `FetchContent_MakeAvailable(daxa)` - since they decide both what gets compiled into the `daxa` library and which extra dependencies `cmake/deps.cmake` fetches.
 
@@ -84,7 +85,7 @@ All of these are plain CMake cache variables and default to `OFF` unless set. Th
 - `..._IMGUI`: [Dear ImGui](https://github.com/ocornut/imgui) and [implot](https://github.com/epezent/implot).
 - `DAXA_ENABLE_TESTS`: [GLFW](https://github.com/glfw/glfw).
 
-Each `FetchContent_Declare`/`FetchContent_MakeAvailable` call is guarded with `if (... AND NOT TARGET ...)`, so if your own project already provides one of these targets (e.g. you fetch your own GLFW for windowing), Daxa reuses your target instead of fetching a second copy.
+Every optional dependency's `FetchContent_Declare`/`FetchContent_MakeAvailable` call is guarded with `if (<option> AND NOT TARGET ...)`, so if your own project already provides one of these targets (e.g. you fetch your own GLFW for windowing), Daxa reuses your target instead of fetching a second copy.
 
 ## Using Daxa in Your Own Project
 

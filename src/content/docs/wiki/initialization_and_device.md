@@ -30,7 +30,7 @@ struct InstanceInfo
 };
 ```
 
-- `.flags`: `DEBUG_UTILS` enables Vulkan's debug naming/validation messages, which is what lets every named Daxa object (buffers, images, pipelines, ...) show up with that name in error messages and tools like RenderDoc. `PARENT_MUST_OUTLIVE_CHILD` means the instance must stay alive for as long as any device created from it - i.e. don't destroy the instance before its devices.
+- `.flags`: `DEBUG_UTILS` enables object names and command labels (`VK_EXT_debug_utils`), which is what lets every named Daxa object (buffers, images, pipelines, ...) show up with that name in error messages and tools like RenderDoc. `PARENT_MUST_OUTLIVE_CHILD` means the instance must stay alive for as long as any device created from it - i.e. don't destroy the instance before its devices.
 - `.engine_name` / `.app_name`: reported to the driver. The defaults are fine while developing; setting `.app_name` to your project's name is good practice once you ship something, since some drivers use this to apply per-application workarounds.
 
 ## Choosing a Device
@@ -93,7 +93,7 @@ daxa::Device device = instance.create_device_2(
 );
 ```
 
-`choose_device(desired_implicit_features, base_info)` performs essentially the loop above for you: it walks `list_devices_properties()` in order and returns a copy of `base_info` with `.physical_device_index` set to the **first** device where `.missing_required_feature == NONE`, the device's descriptor set limits can fit `base_info.max_allowed_images`/`max_allowed_buffers`/`max_allowed_acceleration_structures`, and the device has all of `base_info.explicit_features` and `desired_implicit_features`. If no device qualifies, it throws.
+`choose_device(desired_implicit_features, base_info)` performs essentially the loop above for you: it walks `list_devices_properties()` in order and returns a copy of `base_info` with `.physical_device_index` set to the **first** device where `.missing_required_feature == NONE`, the device's descriptor set limits can fit `base_info.max_allowed_images`/`max_allowed_buffers`/`max_allowed_acceleration_structures`, and the device has all of `base_info.explicit_features` and `desired_implicit_features`. If no device qualifies, It prints `[[DAXA ASSERT FAILURE]]` and calls `std::abort()`, which cannot be caught. If you need to handle "no suitable GPU" gracefully (to show a message box, or retry with relaxed requirements), run the selection loop above yourself instead of calling `choose_device`.
 
 ### A note on device selection strategy
 
@@ -120,7 +120,7 @@ daxa::Device device = instance.create_device_2({
 
 - `.physical_device_index`: which entry of `list_devices_properties()` to create the device from - set via `choose_device` or your own selection logic above.
 - `.explicit_features`: any of the device's `explicit_features` (see above) that you want enabled. Leave default unless you specifically need one - e.g. `BUFFER_DEVICE_ADDRESS_CAPTURE_REPLAY` for RenderDoc-style capture/replay tooling.
-- `.max_allowed_images` / `.max_allowed_buffers` / `.max_allowed_samplers` / `.max_allowed_acceleration_structures`: how many of each resource type Daxa's bindless descriptor sets are sized for. The defaults (10,000 / 10,000 / 400 / 10,000) are generous; the chosen device's descriptor set limits must be able to fit these numbers, or device creation fails. `choose_device`'s device-matching check verifies this for you against whatever values you pass in `base_info`.
+- `.max_allowed_images` / `.max_allowed_buffers` / `.max_allowed_samplers` / `.max_allowed_acceleration_structures`: how many of each resource type Daxa's bindless descriptor sets are sized for. The defaults (10,000 / 10,000 / 400 / 10,000) are generous; the chosen device's descriptor set limits must be able to fit these numbers. Note that `create_device_2` does **not** check them: exceeding a device's limits produces validation-layer errors at descriptor set creation rather than a failed device creation. Either go through `choose_device`, whose device-matching check does verify these values against each device's limits, or compare them against `DeviceProperties::limits` yourself before creating the device.
 - `.name`: debug name for the device.
 
 ## The Device

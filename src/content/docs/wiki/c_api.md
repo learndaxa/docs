@@ -8,7 +8,7 @@ Daxa exposes a full C API in addition to its C++ layer. The C++ types are thin r
 
 ## The Relationship Between the C and C++ APIs
 
-Every C++ type in Daxa (`daxa::Device`, `daxa::Instance`, `daxa::CommandRecorder`, etc.) inherits from `ManagedPtr<CppType, daxa_CHandle>`. The C handle is the actual opaque pointer that all Daxa internals operate on. The C++ wrapper adds:
+Most C++ types in Daxa (`daxa::Device`, `daxa::Instance`, `daxa::Swapchain`, `daxa::BinarySemaphore`, `daxa::TimelineSemaphore`, the pipelines, `daxa::ExecutableCommandList`, ...) inherit from `ManagedPtr<CppType, daxa_CHandle>`. The C handle is the actual opaque pointer that all Daxa internals operate on. The C++ wrapper adds:
 
 - Automatic reference counting (copy/move/destroy)
 - Overloaded, ergonomic methods that translate to C API calls
@@ -18,7 +18,7 @@ There is no performance difference between the two. The C++ methods compile down
 
 ### Getting a C Handle from a C++ Object
 
-Every C++ wrapper exposes a `.get()` method that returns the underlying C handle:
+Every `ManagedPtr`-derived wrapper exposes a `.get()` method that returns the underlying C handle:
 
 ```cpp
 daxa::Device device = /* ... */;
@@ -35,11 +35,11 @@ You can pass these C handles to any C API function directly.
 
 ### Calling C API Functions from C++
 
-The C API is declared in `<daxa/c/daxa.h>` (or individual sub-headers). Since they use `extern "C"` linkage, they are callable from C++ without any bridging code:
+The C API is declared in `<daxa/c/daxa.h>` (or individual sub-headers). Since they use `extern "C"` linkage, they are callable from C++ without any bridging code. Including `<daxa/daxa.hpp>` does **not** pull the C headers in, so include what you use explicitly:
 
 ```cpp
 #include <daxa/daxa.hpp>      // C++ API
-#include <daxa/c/device.h>    // C API (already included transitively, but explicit for clarity)
+#include <daxa/c/daxa.h>      // C API - not included transitively by daxa.hpp
 
 // Query the underlying VkDevice directly from a C++ Device:
 VkDevice vk_device = daxa_dvc_get_vk_device(device.get());
@@ -59,7 +59,7 @@ All C API functions use `DAXA_EXPORT` which expands to `extern "C" DAXA_CMAKE_EX
 
 ## Error Handling in the C API
 
-Most C API functions return `daxa_Result` — an error code. The C++ wrappers check this internally and throw or assert on failure. In C, check it yourself:
+Most C API functions return `daxa_Result` — an error code. The C++ wrappers check this internally and abort on failure. In C, check it yourself:
 
 ```c
 daxa_Device device;
@@ -70,7 +70,11 @@ if (result != DAXA_RESULT_SUCCESS)
 }
 ```
 
-`DAXA_RESULT_SUCCESS` is zero. Any non-zero value indicates a failure, and a few functions also define specific non-success codes with diagnostic meaning.
+`DAXA_RESULT_SUCCESS` is zero. Any non-zero value indicates a failure, and a few functions also define specific non-success codes with diagnostic meaning. `daxa_Result` is `[[nodiscard]]`, so ignoring it warns (`C4834` on MSVC) - assign it even when you only want the side effect.
+
+:::caution[On MSVC, a failing call breaks before it returns]
+Daxa's internal `_DAXA_RETURN_IF_ERROR` macro calls `__debugbreak()` on MSVC in **all** build configurations, not just debug builds. With no debugger attached that terminates the process with `STATUS_BREAKPOINT`, so the `if (result != DAXA_RESULT_SUCCESS)` branch above is never reached - the error cannot be handled at all. Until this is fixed in Daxa, treat C API errors as fatal on MSVC, and validate inputs (device index, surface format, ...) before making the call rather than reacting to its result.
+:::
 
 ## Object Lifetimes from C
 
@@ -158,14 +162,28 @@ VkCommandBuffer vk_cmd  = daxa_cmd_get_vk_command_buffer(recorder.get());
 VkCommandPool   vk_pool = daxa_cmd_get_vk_command_pool(recorder.get());
 
 // Raw Vulkan call interleaved with Daxa recording:
-vkCmdBeginQuery(vk_cmd, query_pool, 0, 0);
+vkCmdClearColorImage(vk_cmd, vk_image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &range);
 recorder.dispatch({.x = 64, .y = 1, .z = 1});
-vkCmdEndQuery(vk_cmd, query_pool, 0);
 
 daxa::ExecutableCommandList cmd_list = recorder.complete_current_commands();
 ```
 
 The `VkCommandBuffer` is only valid until `complete_current_commands()` is called.
+
+:::caution[A raw command right after a Daxa barrier runs *before* it]
+Daxa batches successive barrier calls and only flushes them into the command buffer when the **next Daxa command** is recorded. `daxa_cmd_get_vk_command_buffer` does not flush, and a raw `vkCmd*` does not count as a Daxa command - so this records the clear before the layout transition, and the validation layer reports the image still in `UNDEFINED`:
+
+```cpp
+recorder.pipeline_image_barrier({
+    .dst_access = daxa::AccessConsts::TRANSFER_WRITE,
+    .image = image,
+    .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
+});
+vkCmdClearColorImage(vk_cmd, vk_image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &range); // runs first!
+```
+
+call the C-API function `daxa_cmd_flush_barriers` to flush all barriers before your `vkCmd...`, properly synchronizing these commands.
+:::
 
 ### Swapchain
 
@@ -184,7 +202,13 @@ Timeline semaphores are standard Vulkan timeline semaphores and can be used dire
 
 ## Using the C API Directly (Pure C)
 
-For projects that cannot use C++, the full C API is sufficient to use Daxa end to end. Creating an instance and device looks like this:
+For projects that cannot use C++, the full C API is sufficient to use Daxa end to end.
+
+:::caution[Compile the C headers with clang, not MSVC]
+Daxa's C headers are not valid C for `cl.exe`: several `static const` structs (in `daxa/c/core.h`, `gpu_resources.h` and `sync.h`) are initialized from other `static const` variables, which MSVC rejects with `C2099: initializer is not a constant` (plus `C2078: too many initializers`) under `/std:c17`. The same headers pass `clang -std=c17` cleanly. Daxa's own C test skips MSVC for this reason. From C++ the headers are fine on every compiler - this only affects translation units compiled as C.
+:::
+
+Creating an instance and device looks like this:
 
 ```c
 #include <daxa/c/daxa.h>
@@ -193,11 +217,15 @@ For projects that cannot use C++, the full C API is sufficient to use Daxa end t
 daxa_Instance instance = NULL;
 daxa_InstanceInfo instance_info = DAXA_DEFAULT_INSTANCE_INFO;
 instance_info.app_name = (daxa_SmallString){.data = "my app", .size = 6};
-daxa_create_instance(&instance_info, &instance);
+daxa_Result result = daxa_create_instance(&instance_info, &instance);
 
+// DAXA_DEFAULT_DEVICE_INFO_2 leaves physical_device_index at ~0u, so a GPU has to be
+// picked first - choose_device fills the index in for you.
 daxa_DeviceInfo2 device_info = DAXA_DEFAULT_DEVICE_INFO_2;
+result = daxa_instance_choose_device(instance, DAXA_IMPLICIT_FEATURE_FLAG_NONE, &device_info);
+
 daxa_Device device = NULL;
-daxa_instance_create_device_2(instance, &device_info, &device);
+result = daxa_instance_create_device_2(instance, &device_info, &device);
 
 // Create and use resources...
 
@@ -205,7 +233,14 @@ daxa_dvc_dec_refcnt(device);
 daxa_instance_dec_refcnt(instance);
 ```
 
-`DAXA_DEFAULT_INSTANCE_INFO` and `DAXA_DEFAULT_DEVICE_INFO_2` are `static const` structs with sensible defaults defined in the headers — the same defaults the C++ constructors use.
+`DAXA_DEFAULT_INSTANCE_INFO` and `DAXA_DEFAULT_DEVICE_INFO_2` are `static const` structs with sensible defaults defined in the headers. They are **not** identical to the C++ defaults, so a C++ program ported to the C API does not behave the same:
+
+| | C default | C++ default (`daxa::InstanceInfo{}` / `daxa::DeviceInfo2{}`) |
+|---|---|---|
+| Instance `flags` | `DEBUG_UTIL` | `DEBUG_UTILS \| PARENT_MUST_OUTLIVE_CHILD` |
+| Device `explicit_features` | `BUFFER_DEVICE_ADDRESS_CAPTURE_REPLAY` | none |
+
+Set the fields you care about explicitly rather than relying on either default matching the other.
 
 ## Interoperability Notes
 

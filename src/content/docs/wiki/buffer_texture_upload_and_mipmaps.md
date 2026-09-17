@@ -10,6 +10,25 @@ CPU-written data usually can't go straight into the memory the GPU reads fastest
 
 This builds on [Command Recording & Submission](/wiki/command-recording/) and [Synchronization](/wiki/synchronization/) - see those pages for more detail on `CommandRecorder`, `pipeline_barrier`, and `pipeline_image_barrier`. See [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for the full `BufferInfo`/`ImageInfo` creation parameters used below.
 
+The snippets below use a few placeholders that stand in for your own data and asset loading:
+
+```cpp
+// Some trivially copyable struct you want on the GPU.
+struct MyData
+{
+    daxa::f32vec4 color;
+    daxa::u32 index;
+};
+MyData my_data = {.color = {1.0f, 0.5f, 0.25f, 1.0f}, .index = 7};
+
+// Raw, already-decoded RGBA8 pixels for a 1024x1024 texture.
+std::vector<std::byte> pixel_storage(1024 * 1024 * 4);
+std::byte * pixels = pixel_storage.data();
+
+// Your own asset loader, decoding straight into the memory you hand it.
+void load_texture_file(char const * path, void * dst, daxa::usize dst_size);
+```
+
 ## Uploading to a Buffer
 
 ### Directly via a host-mapped buffer
@@ -77,7 +96,7 @@ device.submit_commands({
 });
 ```
 
-The staging buffer must stay alive until the GPU has finished the copy - either wait on the returned submit index, or retire it using the [deferred destruction pattern](/wiki/synchronization/#building-your-own-deferred-destruction) from the synchronization page.
+The staging buffer must stay alive until the GPU has finished the copy - But Daxa simplifies this greatly. You can call `device.destroy_buffer(staging_buffer)` right after the submit, and the buffer will be kept alive as a "zombie" until enough submits have passed for the work of the current submit to have guaranteed finished. Alternatively, you can actually add a sort-of fake command into the recorder to tell the submit to that `destroy_buffer` immediately via `recorder.destroy_buffer_deferred(staging_buffer)`.
 
 ## Uploading Texture Data
 
@@ -90,6 +109,7 @@ daxa::ImageId image = device.create_image({
     .mip_level_count = 11, // 1024 -> 1 inclusive
     .usage = daxa::ImageUsageFlagBits::TRANSFER_DST |
              daxa::ImageUsageFlagBits::TRANSFER_SRC | // needed as a blit source for mip generation
+             daxa::ImageUsageFlagBits::HOST_TRANSFER | // needed if you do direct host image copy, remove otherwise!
              daxa::ImageUsageFlagBits::SHADER_SAMPLED,
     .name = "example texture",
 });
@@ -97,7 +117,9 @@ daxa::ImageId image = device.create_image({
 
 ### Direct host image copy (optional)
 
-`VK_EXT_host_image_copy` lets the CPU write directly into an image's memory and perform layout transitions from the host, with no command recorder, staging buffer, or submission at all - the image analogue of the direct buffer write above. Daxa exposes this as `device.copy_memory_to_image()` / `device.copy_image_to_memory()`, plus `device.image_layout_operation()` for host-side layout transitions:
+`VK_EXT_host_image_copy` lets the CPU write directly into an image's memory and perform layout transitions from the host, with no command recorder, staging buffer, or submission at all - the image analogue of the direct buffer write above. Daxa exposes this as `device.copy_memory_to_image()` / `device.copy_image_to_memory()`, plus `device.image_layout_operation()` for host-side layout transitions.
+
+The image has to opt in to this at creation time: **`daxa::ImageUsageFlagBits::HOST_TRANSFER` is required** on any image used with `copy_memory_to_image`, `copy_image_to_memory` or `image_layout_operation` (that is the `HOST_TRANSFER` flag in the `create_image` call above). Without it the call fails, so leave the flag off images you only ever upload through a staging buffer.
 
 ```cpp
 // One-time TO_GENERAL transition, done directly on the host.
@@ -107,7 +129,7 @@ device.image_layout_operation({
 });
 
 device.copy_memory_to_image({
-    .memory_ptr = reinterpret_cast<std::byte const *>(pixels),
+    .memory_ptr = pixels, // std::byte const *
     .image = image,
     .image_slice = {.mip_level = 0},
     .image_extent = {1024, 1024, 1},
@@ -260,6 +282,12 @@ daxa::TransferMemoryPool::Allocation alloc = pool.allocate(texture_size, 16).val
 
 // Decode/load directly into the pool's memory.
 load_texture_file("my_texture.png", alloc.host_address, texture_size);
+
+// Make sure the host write into the pool's memory is visible to the copy.
+recorder.pipeline_barrier({
+    .src_access = daxa::AccessConsts::HOST_WRITE,
+    .dst_access = daxa::AccessConsts::TRANSFER_READ,
+});
 
 recorder.copy_buffer_to_image({
     .src_buffer = pool.buffer(),

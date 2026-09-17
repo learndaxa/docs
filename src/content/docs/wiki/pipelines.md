@@ -52,7 +52,7 @@ struct ShaderInfo
 };
 ```
 
-- `.byte_code` / `.byte_code_size`: a pointer to compiled SPIR-V words and the word count. Daxa itself doesn't compile shaders - this is raw SPIR_V, normally produced by [Pipeline Manager](/wiki/pipeline-manager/) or your own glslang/dxc/slangc invocation.
+- `.byte_code` / `.byte_code_size`: a pointer to compiled SPIR-V words and the word count. Daxa itself doesn't compile shaders - this is raw SPIR-V, normally produced by [Pipeline Manager](/wiki/pipeline-manager/) (which calls these same `create_*_pipeline` functions for you, and can also dump the SPIR-V via its `write_out_spirv` option) or by your own glslang/dxc/slangc invocation.
 - `.create_flags`: `ShaderCreateFlagBits::ALLOW_VARYING_SUBGROUP_SIZE` lets the driver pick any subgroup size at dispatch time; `ShaderCreateFlagBits::REQUIRE_FULL_SUBGROUPS` requires every invoked subgroup to be fully occupied. Both map to the corresponding Vulkan subgroup-size-control flags and default to off.
 - `.required_subgroup_size`: when set, pins the shader to a specific subgroup (wave) size, e.g. `32` or `64`. Leave as `None` to let the driver choose.
 - `.entry_point`: the name of the shader's entry function. Defaults to `"main"`, which is what GLSL/HLSL compilers normally produce.
@@ -100,12 +100,14 @@ Every shader stage is `Optional<ShaderInfo>`, since which stages are present det
 - A traditional pipeline supplies `.vertex_shader_info` and `.fragment_shader_info`, optionally adding `.tesselation_control_shader_info` / `.tesselation_evaluation_shader_info` for tessellation.
 - A mesh-shading pipeline supplies `.mesh_shader_info` and `.fragment_shader_info`, optionally adding `.task_shader_info` for the task (amplification) stage. Vertex/tessellation and mesh/task stages are mutually exclusive.
 
+`daxa::Optional<T>` has no initializer-list constructor, so the shader stages and `.depth_test` must be spelled out with their type names - a bare `{...}` fails to compile (`C2664` on MSVC):
+
 ```cpp
 daxa::RasterPipeline pipeline = device.create_raster_pipeline({
-    .vertex_shader_info = {.byte_code = vert_spirv.data(), .byte_code_size = static_cast<u32>(vert_spirv.size())},
-    .fragment_shader_info = {.byte_code = frag_spirv.data(), .byte_code_size = static_cast<u32>(frag_spirv.size())},
+    .vertex_shader_info = daxa::ShaderInfo{.byte_code = vert_spirv.data(), .byte_code_size = static_cast<u32>(vert_spirv.size())},
+    .fragment_shader_info = daxa::ShaderInfo{.byte_code = frag_spirv.data(), .byte_code_size = static_cast<u32>(frag_spirv.size())},
     .color_attachments = {{.format = swapchain.get_format()}},
-    .depth_test = {
+    .depth_test = daxa::DepthTestInfo{
         .depth_attachment_format = daxa::Format::D32_SFLOAT,
         .enable_depth_write = true,
         .depth_test_compare_op = daxa::CompareOp::LESS_OR_EQUAL,
@@ -245,7 +247,7 @@ struct DepthTestInfo
 
 - `.enable_depth_write`: whether passing fragments write their depth back into the attachment. Set this to `false` for things like transparent geometry that should be depth-*tested* but not occlude what's drawn after it.
 - `.depth_test_compare_op`: a `CompareOp` (`NEVER`, `LESS`, `EQUAL`, `LESS_OR_EQUAL`, `GREATER`, `NOT_EQUAL`, `GREATER_OR_EQUAL`, `ALWAYS`) - the function used to compare the incoming fragment's depth against the value already in the attachment. `LESS_OR_EQUAL` (the default) is the conventional "closer wins" test for a reversed-or-not depth buffer where smaller values are nearer.
-- `.min_depth_bounds` / `.max_depth_bounds`: the depth bounds test range.
+- `.min_depth_bounds` / `.max_depth_bounds`: **currently have no effect.** They are passed through to Vulkan, but Daxa hard-codes `depthBoundsTestEnable = VK_FALSE`, so the depth bounds test is never actually enabled. Until that is fixed in Daxa, don't rely on these fields.
 
 `CompareOp` is reused elsewhere too - the same enum is the natural one to reach for if you implement your own depth comparisons in shader code.
 
@@ -286,15 +288,15 @@ struct RasterizerInfo
 
 - `.primitive_topology`: how vertices are assembled into primitives - `TRIANGLE_LIST` (the default), `TRIANGLE_STRIP`, `TRIANGLE_FAN`, `LINE_LIST`, `LINE_STRIP`, `POINT_LIST`, the `_WITH_ADJACENCY` variants (for geometry shaders), or `PATCH_LIST` (for tessellation).
 - `.primitive_restart_enable`: for strip/fan topologies with an index buffer, treat the index value `0xFFFFFFFF`/`0xFFFF` as "start a new primitive" instead of as a vertex index.
-- `.polygon_mode`: `FILL` (the default), `LINE` (wireframe), or `POINT` (vertices only). `LINE`/`POINT` require the `fillModeNonSolid` device feature.
+- `.polygon_mode`: `FILL` (the default), `LINE` (wireframe), or `POINT` (vertices only). (`LINE`/`POINT` need Vulkan's `fillModeNonSolid` feature, which Daxa requires of every device, so it is always available.)
 - `.face_culling`: a `FaceCullFlags` - `FaceCullFlagBits::NONE` (default, no culling), `FRONT_BIT`, `BACK_BIT`, or `FRONT_AND_BACK`.
 - `.front_face_winding`: which winding order (`CLOCKWISE` (default) or `COUNTER_CLOCKWISE`) of a triangle's vertices, in screen space, is considered "front-facing" for culling purposes.
 - `.depth_clamp_enable`: clamp fragment depths to `[0, 1]` instead of clipping geometry against the near/far planes. Useful for techniques like shadow casters that should never be near/far-clipped.
-- `.rasterizer_discard_enable`: discard all fragments immediately after the rasterizer - i.e. run the vertex/geometry/tessellation stages but produce no fragment shader invocations. Useful for pipelines used purely for their side effects (e.g. transform feedback / stream-out style work).
-- `.depth_bias_enable` + `.depth_bias_constant_factor` / `.depth_bias_clamp` / `.depth_bias_slope_factor`: adds a bias to each fragment's depth value before the depth test - the classic technique for avoiding shadow acne / z-fighting on coplanar geometry (e.g. shadow map rendering). These three values can also be overridden per-draw via `RenderCommandRecorder::set_depth_bias(DepthBiasInfo{...})`.
-- `.line_width`: width in pixels for `LINE_*` topologies / `polygon_mode = LINE`. Requires the `wideLines` device feature for values other than `1.0`.
+- `.rasterizer_discard_enable`: discard all fragments immediately after the rasterizer - i.e. run the vertex/geometry/tessellation stages but produce no fragment shader invocations. Useful for pipelines used purely for their side effects (e.g. transform feedback / stream-out style work). Setting it is not enough on its own: a discard pipeline must **also** set `.fragment_shader_info = daxa::None` and leave `.color_attachments` empty, or the pipeline is invalid.
+- `.depth_bias_enable` + `.depth_bias_constant_factor` / `.depth_bias_clamp` / `.depth_bias_slope_factor`: adds a bias to each fragment's depth value before the depth test - the classic technique for avoiding shadow acne / z-fighting on coplanar geometry (e.g. shadow map rendering). `.depth_bias_enable` turns the feature on, but **depth bias is dynamic state in Daxa**: the three factor values baked into the pipeline are never applied on their own. You must call `RenderCommandRecorder::set_depth_bias(DepthBiasInfo{...})` before each draw that needs a bias, otherwise the bias stays at zero.
+- `.line_width`: width in pixels for `LINE_*` topologies / `polygon_mode = LINE`. (Values other than `1.0` need Vulkan's `wideLines` feature, which Daxa requires of every device, so it is always available.)
 - `.conservative_raster_info`: `Optional<ConservativeRasterInfo>` - enables [conservative rasterization](https://www.khronos.org/blog/vulkan-subgroup-tutorial), where `.mode` is `OVERESTIMATE` (any pixel even partially covered by a primitive is rasterized) or `UNDERESTIMATE` (only pixels fully covered are), and `.size` extends/shrinks the effective primitive size in pixels. Useful for things like voxelization, where you need guaranteed coverage of every touched pixel.
-- `.line_raster_info`: `Optional<LineRasterInfo>` - fine-grained line rendering control: `.mode` selects between `DEFAULT`, `RECTANGULAR`, `BRESENHAM`, and `RECTANGULAR_SMOOTH` line rasterization algorithms, and `.stippled` + `.stipple_factor` + `.stipple_pattern` enable dashed/dotted lines (a 16-bit repeating on/off pattern, each bit repeated `.stipple_factor` times).
+- `.line_raster_info`: `Optional<LineRasterInfo>` - fine-grained line rendering control: `.mode`  selects between `DEFAULT`, `RECTANGULAR`, `BRESENHAM`, and `RECTANGULAR_SMOOTH` line rasterization algorithms, and `.stippled` + `.stipple_factor` + `.stipple_pattern` enable dashed/dotted lines (a 16-bit repeating on/off pattern, each bit repeated `.stipple_factor` times).
 - `.static_state_sample_count`: `Optional<RasterizationSamples>` (`E1`, `E2`, `E4`, `E8` - 1/2/4/8x MSAA). When `None` (the default), the pipeline uses whatever MSAA sample count the command recorder is currently set to via `set_rasterization_samples` (a dynamic state, on devices that support it); when set, the sample count is baked into the pipeline and `set_rasterization_samples` must not be used to change it.
 
 ## Ray Tracing Pipelines
@@ -317,6 +319,8 @@ struct RayTracingPipelineInfo
     SmallString name = {};
 };
 ```
+
+Ray tracing shaders need two extra things on the shader side, both covered in [Shader Integration & Bindless](/wiki/shader-integration/): define `DAXA_RAY_TRACING 1` **before** including `<daxa/daxa.inl>`, which is what makes `daxa_TlasId` and the ray tracing types exist at all, and declare the acceleration structure accessor so a `daxa_TlasId` from a push constant can be turned into a `daxa_accelerationStructureEXT` to trace against.
 
 - The six `Span<ShaderInfo const>` fields are flat lists of compiled shaders for each stage. A pipeline can have multiple ray generation shaders, multiple miss shaders, and so on - `.shader_groups` (below) is what ties specific shaders together and is what the SBT ultimately indexes into.
 - `.max_ray_recursion_depth`: the maximum depth of `TraceRay()` calls a shader in this pipeline is allowed to make recursively (a closest-hit shader tracing a reflection ray, which itself can hit something that traces another ray, etc.). Must be `<= RayTracingPipelineProperties::max_ray_recursion_depth` for the device.
@@ -345,22 +349,33 @@ struct RayTracingShaderGroupInfo
 };
 ```
 
-- `GENERAL`: a single ray generation, miss, or callable shader. Set `.general_shader_index` to that shader's index within the corresponding `ray_gen_shaders` / `miss_hit_shaders` / `callable_shaders` span.
-- `TRIANGLES_HIT_GROUP`: a hit group for built-in triangle geometry. Set `.closest_hit_shader_index` (into `closest_hit_shaders`) and optionally `.any_hit_shader_index` (into `any_hit_shaders`); leave `.intersection_shader_index` at its default (`~0U`), since triangle intersection is handled by fixed-function hardware.
-- `PROCEDURAL_HIT_GROUP`: a hit group for custom geometry (AABBs). Set `.intersection_shader_index` (into `intersection_shaders`, required) and optionally `.closest_hit_shader_index` / `.any_hit_shader_index`.
+All four `*_shader_index` fields index into **one flattened list of every shader in the pipeline**, not into the individual spans. Daxa concatenates the six spans in this fixed order:
+
+```text
+ray_gen_shaders, intersection_shaders, any_hit_shaders, callable_shaders, closest_hit_shaders, miss_hit_shaders
+```
+
+So with one ray gen, one closest hit and one miss shader, the flattened indices are `0` = ray gen, `1` = closest hit, `2` = miss - the miss group's `general_shader_index` is `2`, not `0`. Getting this wrong is expensive: a hit group pointing at a ray generation shader trips `VUID-VkRayTracingPipelineCreateInfoKHR-closestHitShader-03478` and then hangs the GPU on the first trace.
+
+- `GENERAL`: a single ray generation, miss, or callable shader. Set `.general_shader_index` to that shader's index in the flattened list.
+- `TRIANGLES_HIT_GROUP`: a hit group for built-in triangle geometry. Set `.closest_hit_shader_index` and optionally `.any_hit_shader_index`; leave `.intersection_shader_index` at its default (`~0U`), since triangle intersection is handled by fixed-function hardware.
+- `PROCEDURAL_HIT_GROUP`: a hit group for custom geometry (AABBs). Set `.intersection_shader_index` (required) and optionally `.closest_hit_shader_index` / `.any_hit_shader_index`.
 
 ```cpp
 daxa::RayTracingPipeline pipeline = device.create_ray_tracing_pipeline({
+    // Note: closest_hit_shaders is declared before miss_hit_shaders in RayTracingPipelineInfo,
+    // and designated initializers have to follow declaration order.
     .ray_gen_shaders = std::array{ray_gen_shader_info},
-    .miss_hit_shaders = std::array{miss_shader_info},
     .closest_hit_shaders = std::array{closest_hit_shader_info},
+    .miss_hit_shaders = std::array{miss_shader_info},
+    // Flattened shader list: 0 = ray gen, 1 = closest hit, 2 = miss.
     .shader_groups = std::array{
         // Group 0: ray generation
         daxa::RayTracingShaderGroupInfo{.type = daxa::ShaderGroup::GENERAL, .general_shader_index = 0},
         // Group 1: miss
-        daxa::RayTracingShaderGroupInfo{.type = daxa::ShaderGroup::GENERAL, .general_shader_index = 0},
+        daxa::RayTracingShaderGroupInfo{.type = daxa::ShaderGroup::GENERAL, .general_shader_index = 2},
         // Group 2: triangle hit group
-        daxa::RayTracingShaderGroupInfo{.type = daxa::ShaderGroup::TRIANGLES_HIT_GROUP, .closest_hit_shader_index = 0},
+        daxa::RayTracingShaderGroupInfo{.type = daxa::ShaderGroup::TRIANGLES_HIT_GROUP, .closest_hit_shader_index = 1},
     },
     .max_ray_recursion_depth = 1,
     .name = "my rt pipeline",
@@ -449,4 +464,4 @@ recorder.trace_rays({
 });
 ```
 
-`TraceRaysInfo` additionally has `.raygen_shader_binding_table_offset`, `.miss_shader_binding_table_offset`, `.miss_shader_binding_table_stride`, and `.hit_shader_binding_table_offset` for selecting a starting entry/stride within the SBT's regions - useful when one SBT buffer holds groups for multiple different "passes" (e.g. primary rays vs. shadow rays) and you select between them per `trace_rays` call. `trace_rays_indirect(TraceRaysIndirectInfo{...})` is the same, but reads `width`/`height`/`depth` from a GPU buffer via `.indirect_device_address`, letting the GPU itself decide how many rays to trace.
+`TraceRaysInfo` additionally has `.raygen_shader_binding_table_offset`, `.miss_shader_binding_table_offset`, `.hit_shader_binding_table_offset`, and `.callable_shader_binding_table_offset` for selecting a starting entry within the SBT's regions - useful when one SBT buffer holds groups for multiple different "passes" (e.g. primary rays vs. shadow rays) and you select between them per `trace_rays` call. `trace_rays_indirect(TraceRaysIndirectInfo{...})` is the same as `trace_rays`, but reads `width`/`height`/`depth` from a GPU buffer via `.indirect_device_address`, letting the GPU itself decide how many rays to trace.

@@ -41,20 +41,24 @@ Successive `pipeline_barrier`/`pipeline_image_barrier` calls are batched togethe
 Images need everything a buffer barrier needs (`src_access`/`dst_access`), plus an image layout transition - GPUs store images in different memory layouts depending on how they're being used (e.g. as a render target vs. a sampled texture vs. a present source), and switching usages can require switching layouts.
 
 ```cpp
+// One-time transition out of UNDEFINED, before the swapchain image's first use this frame.
 recorder.pipeline_image_barrier({
     .dst_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
-    .image = render_target,
+    .image = swapchain_image,
     .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
 });
 
-// ... render into render_target ...
+// ... render into swapchain_image ...
 
+// Hand it to the presentation engine.
 recorder.pipeline_image_barrier({
     .src_access = daxa::AccessConsts::COLOR_ATTACHMENT_OUTPUT_READ_WRITE,
     .image = swapchain_image,
     .layout_operation = daxa::ImageLayoutOperation::TO_PRESENT_SRC,
 });
 ```
+
+Both barriers name the *same* image on purpose: `TO_PRESENT_SRC` only makes sense for an image that is about to be presented, so the transition out of `UNDEFINED` and the transition to `PRESENT_SRC` bracket the same swapchain image. An offscreen render target would get the `TO_GENERAL` barrier and then simply stay in `GENERAL`.
 
 ### Why the two remaining transitions exist
 
@@ -113,8 +117,9 @@ device.submit_commands({
     .signal_timeline_semaphores = std::array{std::pair{timeline, u64{1}}},
 });
 
-// The CPU can wait on it too:
-timeline.wait_for_value(1);
+// The CPU can wait on it too. wait_for_value returns whether the wait
+// succeeded before the (optional) timeout, and is [[nodiscard]].
+bool const reached = timeline.wait_for_value(1);
 ```
 
 Unlike binary semaphores, a timeline semaphore can be signaled and waited on any number of times for increasing values, can represent multiple in-flight frames at once, and can be inspected/waited on from the CPU (`value()`, `wait_for_value()`).
@@ -125,12 +130,26 @@ Given how much more flexible timeline semaphores are, you might wonder why Daxa 
 
 ## Multi-Queue Sync with Timeline Semaphores
 
-Daxa exposes a main queue plus several compute and transfer queues (`daxa::QUEUE_MAIN`, `QUEUE_COMPUTE_0`..`QUEUE_COMPUTE_3`, `QUEUE_TRANSFER_0`/`QUEUE_TRANSFER_1`). Each `submit_commands` call takes a `.queue`, and a timeline semaphore can synchronize submissions across different queues:
+Daxa exposes a main queue plus several compute and transfer queues (`daxa::QUEUE_MAIN`, `QUEUE_COMPUTE_0`..`QUEUE_COMPUTE_3`, `QUEUE_TRANSFER_0`/`QUEUE_TRANSFER_1`).
+
+How many of those actually exist is **device-dependent**: only `QUEUE_MAIN` is guaranteed. Query the rest with `device.queue_count(daxa::QueueType::COMPUTE)` / `device.queue_count(daxa::QueueType::TRANSFER)` and fall back to `QUEUE_MAIN` when the queue you wanted isn't there, rather than hard-coding `QUEUE_COMPUTE_0` and hoping.
+
+Each `submit_commands` call takes a `.queue`, and a timeline semaphore can synchronize submissions across different queues:
+
+:::caution[The recorder's queue type must match the submit queue]
+A `CommandRecorder` is created for a queue *type*, and a command list can only be submitted to a queue of that type. `device.create_command_recorder({.name = ...})` defaults to `QueueType::MAIN`, so submitting its list to `QUEUE_TRANSFER_0` or `QUEUE_COMPUTE_0` is rejected (and on MSVC takes the process down before you can inspect the error). Record the lists in the examples below like this:
+
+```cpp
+auto upload_recorder  = device.create_command_recorder({.queue_type = daxa::QueueType::TRANSFER, .name = "upload"});
+auto compute_recorder = device.create_command_recorder({.queue_type = daxa::QueueType::COMPUTE, .name = "compute"});
+auto render_recorder  = device.create_command_recorder({.name = "render"}); // QueueType::MAIN by default
+```
+:::
 
 ```cpp
 daxa::TimelineSemaphore upload_done = device.create_timeline_semaphore({.name = "upload done"});
 
-// Upload new data on a transfer queue.
+// Upload new data on a transfer queue (upload_cmd_list recorded with .queue_type = TRANSFER).
 device.submit_commands({
     .queue = daxa::QUEUE_TRANSFER_0,
     .command_lists = std::array{upload_cmd_list},
@@ -297,11 +316,16 @@ u64 const submit_index = device.submit_commands({
 pending_frees.push_back({.retire_index = submit_index, .data = std::move(staging)});
 
 // Once per frame (e.g. alongside device.collect_garbage()):
-u64 const done_index = device.oldest_pending_submit_index();
-while (!pending_frees.empty() && pending_frees.front().retire_index <= done_index)
+u64 const oldest_pending = device.oldest_pending_submit_index();
+while (!pending_frees.empty() && pending_frees.front().retire_index < oldest_pending)
 {
     pending_frees.pop_front(); // safe to destroy/reuse - the GPU is done with it
 }
 ```
+
+Two details of `oldest_pending_submit_index()` are easy to get wrong, and Daxa's own garbage collector handles both:
+
+- It returns the index of the oldest submit that is **still pending**, not the newest finished one - so the comparison has to be `<`, not `<=`. Using `<=` retires the oldest still-in-flight submit's resources one submit too early, while the GPU may still be reading them.
+- When nothing is pending at all it returns `u64` max (an undocumented sentinel meaning "everything has finished"), which conveniently makes the `<` comparison retire everything - but means you cannot treat the value as a real submit index in other arithmetic.
 
 Because `oldest_pending_submit_index()` is the minimum over *all* queues, this is the simplest correct check when a resource could have been touched by any queue. If you know a resource was only ever used on one specific queue, `device.latest_queue_submit_index(queue)` (or a CPU-side `device.wait_on_submit`) lets you check or wait on just that queue instead. Either way, the bookkeeping is just a `u64` per resource - no fences, no semaphores, no per-resource sync objects.

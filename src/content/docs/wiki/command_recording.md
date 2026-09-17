@@ -70,7 +70,7 @@ device.submit_commands({
 });
 ```
 
-Daxa also provides `copy_buffer_to_image`, `copy_image_to_buffer`, `copy_image_to_image`, `blit_image_to_image`, `clear_buffer`, and `clear_image` for the other common cases.
+Daxa also provides `copy_buffer_to_image`, `copy_image_to_buffer`, `copy_image_to_image`, `blit_image_to_image`, `clear_buffer`, and `clear_image` for the other common cases. `clear_buffer`'s `clear_value` is a single `u32` that is repeated over the cleared range, not a byte value - `{.clear_value = 0x12345678}` fills the range with that 32-bit pattern.
 
 See [Buffer/Texture Upload & Mip Map Generation](/wiki/buffer-texture-upload-and-mipmaps/) for a complete staging-buffer upload pattern (including the barriers above) and mip-chain generation with `blit_image_to_image`, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the buffers/images being copied.
 
@@ -80,6 +80,13 @@ Compute pipelines are bound and dispatched directly on the `CommandRecorder` - n
 
 ```cpp
 daxa::CommandRecorder recorder = device.create_command_recorder({.name = "compute recorder"});
+
+// A freshly created image starts out in UNDEFINED - one-time transition before the shader writes it.
+recorder.pipeline_image_barrier({
+    .dst_access = daxa::AccessConsts::COMPUTE_SHADER_WRITE,
+    .image = image,
+    .layout_operation = daxa::ImageLayoutOperation::TO_GENERAL,
+});
 
 recorder.set_pipeline(*compute_pipeline);
 
@@ -208,8 +215,27 @@ Inside a renderpass, `RenderCommandRecorder` exposes:
 - `set_index_buffer(SetIndexBufferInfo{...})` — bind an index buffer before `draw_indexed`.
 - `draw(DrawInfo{...})` — non-indexed draw.
 - `draw_indexed(DrawIndexedInfo{...})` — indexed draw.
-- `draw_indirect(DrawIndirectInfo{...})` / `draw_indirect_count(DrawIndirectCountInfo{...})` — draw with parameters from a GPU buffer, optionally with the draw count also on the GPU.
+- `draw_indirect(DrawIndirectInfo{...})` — draw with parameters read from a GPU buffer. Set `draw_command_stride` explicitly: it defaults to `0`, which is not a usable stride for `draw_count > 1`.
 - `draw_mesh_tasks(DrawMeshTasksInfo{.x, .y, .z})` / `draw_mesh_tasks_indirect` / `draw_mesh_tasks_indirect_count` — mesh shader draw variants.
+
+```cpp
+// Matches Vulkan's VkDrawIndirectCommand layout - the contents of indirect_buffer.
+struct DrawIndirectCommand
+{
+    daxa::u32 vertex_count;
+    daxa::u32 instance_count;
+    daxa::u32 first_vertex;
+    daxa::u32 first_instance;
+};
+
+rr.draw_indirect({
+    .draw_command_buffer = indirect_buffer,
+    .draw_count = 1,
+    .draw_command_stride = sizeof(DrawIndirectCommand), // do not leave at the 0 default
+});
+```
+
+`draw_indirect_count(DrawIndirectCountInfo{...})` and `draw_mesh_tasks_indirect_count` also exist, but **cannot be used today**: they need Vulkan's `drawIndirectCount` feature, which Daxa never enables, so every call is rejected by the validation layer (`VUID-vkCmdDrawIndirectCount-None-04445`). Keep the draw count on the CPU, or cap it with `max_draw_count` on a plain `draw_indirect`, until Daxa enables the feature. Note also that `DrawIndirectCountInfo::indirect_buffer` is not a buffer despite its name - it is the byte offset into `draw_command_buffer`.
 
 See [Pipelines](/wiki/pipelines/#raster-pipelines) for `RasterPipelineInfo`, color attachment formats, blending, depth testing, and rasterizer state, and [Buffers, Images & Acceleration Structures](/wiki/buffers-images-acceleration-structures/) for creating the resources used as attachments and vertex buffers.
 
@@ -219,8 +245,8 @@ Debug labels annotate a command buffer with named, colored regions that appear i
 
 ```cpp
 recorder.begin_label({
-    .label_name = "Shadow Pass",
     .label_color = {1.0f, 0.5f, 0.0f, 1.0f},
+    .name = "Shadow Pass",
 });
 
 // ... shadow pass commands ...
@@ -228,14 +254,7 @@ recorder.begin_label({
 recorder.end_label();
 ```
 
-Labels can be nested — each `begin_label` must be matched by an `end_label` before the command list is completed. To drop a single named marker with no extent, use `insert_label`:
-
-```cpp
-recorder.insert_label({
-    .label_name = "Upload complete",
-    .label_color = {0.0f, 1.0f, 0.0f, 1.0f},
-});
-```
+Labels can be nested — each `begin_label` must be matched by an `end_label` before the command list is completed. There is no `insert_label` for a single marker with no extent; use a `begin_label`/`end_label` pair around nothing if you need one.
 
 `label_color` is an RGBA `f32` vec4. Labels are backed by `VK_EXT_debug_utils` and are silently ignored when the extension is not loaded.
 
@@ -276,16 +295,21 @@ recorder.write_timestamp({
 });
 ```
 
-After the frame (once the GPU has finished — e.g. after `collect_garbage`), read the results back:
+Then read the results back, **after actually waiting for the GPU** — `device.wait_on_submit(...)` on the submit that wrote them, `device.queue_wait_idle(...)`, or `device.wait_idle()`. `collect_garbage()` is not a wait: it only retires work the GPU has already finished, so calling it does not make the timestamps available.
+
+`get_query_results` returns the values by value, and writes **two `u64` entries per query**: the timestamp itself, followed by an availability flag (`1` once the GPU has written it). So a 2-query pool yields 4 values, and query *n* lives at index `2 * n`:
 
 ```cpp
-std::array<u64, 2> timestamps = {};
-query_pool.get_query_results(0, 2, timestamps.data());
+std::vector<u64> timestamps = query_pool.get_query_results(0, 2); // 4 entries
 
-float ms = float(timestamps[1] - timestamps[0])
+bool const available = timestamps[1] != 0 && timestamps[3] != 0;
+
+float ms = float(timestamps[2] - timestamps[0]) // query 1 minus query 0
          * device.properties().limits.timestamp_period
          / 1e6f;
 ```
+
+Using `timestamps[1] - timestamps[0]` subtracts the first query's availability flag from its timestamp, which produces a nonsense duration (on the order of `1e13` ms) rather than an obviously wrong value - so it is worth double checking the indices.
 
 `timestamp_period` is a device-specific constant — the number of nanoseconds per raw timestamp tick. It varies between GPU vendors and models, so it must be queried from the device rather than assumed. Dividing by `1e6` then converts nanoseconds to milliseconds. Use `TOP_OF_PIPE`/`BOTTOM_OF_PIPE` for the widest bracket; narrow it to specific stages (e.g. `COMPUTE_SHADER`, `COLOR_ATTACHMENT_OUTPUT`) when you want to isolate a particular stage's contribution.
 
@@ -309,8 +333,8 @@ recorder.dispatch({...}); // compute that writes region 0
 // Signal after the compute stage — the event is set once the GPU
 // reaches this point in the command stream.
 recorder.signal_event({
+    .barriers = std::array{daxa::BarrierInfo{.src_access = daxa::AccessConsts::COMPUTE_SHADER_WRITE}},
     .event = event,
-    .src_access = daxa::AccessConsts::COMPUTE_SHADER_WRITE,
 });
 
 // Other work that doesn't need region 0 can go here and will
@@ -318,8 +342,8 @@ recorder.signal_event({
 
 // Wait before anything that reads region 0.
 recorder.wait_event({
+    .barriers = std::array{daxa::BarrierInfo{.dst_access = daxa::AccessConsts::TRANSFER_READ}},
     .event = event,
-    .dst_access = daxa::AccessConsts::TRANSFER_READ,
 });
 
 recorder.copy_buffer_to_buffer({...}); // reads region 0

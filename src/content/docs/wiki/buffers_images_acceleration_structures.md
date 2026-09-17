@@ -134,21 +134,120 @@ daxa::SamplerId sampler = device.create_sampler({});
 
 ### Acceleration Structures (TLAS / BLAS)
 
-TLASs and BLASs are used for hardware ray tracing. Like buffers and images, they are SROs and are identified by `daxa::TlasId` / `daxa::BlasId`. Before creating one, query the required backing size with `device.tlas_build_sizes()` / `device.blas_build_sizes()`:
+TLASs and BLASs are used for hardware ray tracing. Like buffers and images, they are SROs and are identified by `daxa::TlasId` / `daxa::BlasId`. They are only available if the device supports them - check `device.properties().acceleration_structure_properties.has_value()` first.
+
+Creating one is a three-part process, because the size of an acceleration structure depends on the geometry that will go into it:
+
+1. Describe the geometry in a `BlasBuildInfo` / `TlasBuildInfo`.
+2. Ask the device how big the result and its scratch memory need to be (`device.blas_build_sizes()` / `device.tlas_build_sizes()`).
+3. Create the (empty) acceleration structure at that size, point the build info at it plus a scratch buffer, and record a build command.
+
+### Building a BLAS
+
+A BLAS holds the geometry itself. Vertex and index data are passed as **device addresses**, not `BufferId`s, so the buffers have to exist first:
 
 ```cpp
+auto geometries = std::array{daxa::BlasTriangleGeometryInfo{
+    .vertex_data = device.device_address(vertex_buffer).value(),
+    .max_vertex = 2,   // highest vertex index referenced, not the vertex count
+    .index_data = device.device_address(index_buffer).value(),
+    .count = 1,        // number of triangles
+}};
+
+auto blas_build_info = daxa::BlasBuildInfo{.geometries = geometries};
+daxa::AccelerationStructureBuildSizesInfo const blas_sizes = device.blas_build_sizes(blas_build_info);
+
 daxa::BlasId blas = device.create_blas({
-    .size = blas_build_size, // from device.blas_build_sizes(...)
+    .size = blas_sizes.acceleration_structure_size,
     .name = "example blas",
 });
 
-daxa::TlasId tlas = device.create_tlas({
-    .size = tlas_build_size, // from device.tlas_build_sizes(...)
-    .name = "example tlas",
+// Scratch memory the driver uses while building. Its alignment is device-specific.
+u64 const scratch_alignment = device.properties()
+                                  .acceleration_structure_properties.value()
+                                  .min_acceleration_structure_scratch_offset_alignment;
+daxa::BufferId blas_scratch = device.create_buffer({
+    .size = daxa::align_up(blas_sizes.build_scratch_size, scratch_alignment),
+    .name = "blas scratch",
 });
+
+// Fill in the destination and scratch now that they exist.
+blas_build_info.dst_blas = blas;
+blas_build_info.scratch_data = device.device_address(blas_scratch).value();
 ```
 
-Building the actual acceleration structure contents happens later via build commands on a `daxa::CommandRecorder` (see [Command Recording & Submission](/wiki/command-recording/)). Once built, a TLAS is bound for tracing via [Pipelines: Ray Tracing Pipelines](/wiki/pipelines/#ray-tracing-pipelines).
+### Building a TLAS
+
+A TLAS references BLASs through an array of `daxa_BlasInstanceData` in a buffer - one entry per instance, each carrying a 3x4 row-major transform and the BLAS's device address:
+
+```cpp
+daxa::BufferId instance_buffer = device.create_buffer({
+    .size = sizeof(daxa_BlasInstanceData),
+    .memory_flags = daxa::MemoryFlagBits::HOST_ACCESS_RANDOM,
+    .name = "tlas instances",
+});
+
+*device.buffer_host_address_as<daxa_BlasInstanceData>(instance_buffer).value() = daxa_BlasInstanceData{
+    .transform = {
+        {1, 0, 0, 0},
+        {0, 1, 0, 0},
+        {0, 0, 1, 0},
+    },
+    .instance_custom_index = 0,
+    .mask = 0xFF,
+    .instance_shader_binding_table_record_offset = 0,
+    .flags = DAXA_GEOMETRY_INSTANCE_FORCE_OPAQUE,
+    .blas_device_address = device.device_address(blas).value(),
+};
+
+auto blas_instances = std::array{daxa::TlasInstanceInfo{
+    .data = device.device_address(instance_buffer).value(),
+    .count = 1,
+    .is_data_array_of_pointers = false,
+    .flags = daxa::GeometryFlagBits::OPAQUE,
+}};
+
+auto tlas_build_info = daxa::TlasBuildInfo{.instances = blas_instances};
+daxa::AccelerationStructureBuildSizesInfo const tlas_sizes = device.tlas_build_sizes(tlas_build_info);
+
+daxa::TlasId tlas = device.create_tlas({
+    .size = tlas_sizes.acceleration_structure_size,
+    .name = "example tlas",
+});
+
+daxa::BufferId tlas_scratch = device.create_buffer({
+    .size = daxa::align_up(tlas_sizes.build_scratch_size, scratch_alignment),
+    .name = "tlas scratch",
+});
+
+tlas_build_info.dst_tlas = tlas;
+tlas_build_info.scratch_data = device.device_address(tlas_scratch).value();
+```
+
+### Recording the builds
+
+Both builds are recorded on a `daxa::CommandRecorder` (see [Command Recording & Submission](/wiki/command-recording/)). The TLAS build reads the BLAS the previous command wrote, so a barrier between them is required:
+
+```cpp
+daxa::CommandRecorder recorder = device.create_command_recorder({.name = "acceleration structure build"});
+
+// It's at this point that the vertex_buffer and index_buffer must contain valid data for the blas to be built from.
+
+recorder.build_acceleration_structures({.blas_build_infos = std::array{blas_build_info}});
+
+recorder.pipeline_barrier({
+    .src_access = daxa::AccessConsts::ACCELERATION_STRUCTURE_BUILD_WRITE,
+    .dst_access = daxa::AccessConsts::ACCELERATION_STRUCTURE_BUILD_READ,
+});
+
+recorder.build_acceleration_structures({.tlas_build_infos = std::array{tlas_build_info}});
+
+device.submit_commands({.command_lists = std::array{recorder.complete_current_commands()}});
+```
+
+The scratch buffers are only needed for the duration of the build, so they can be destroyed once it has completed (or right after the submit - see [deferred destruction](#deferred-destruction---zombies)). The vertex, index and instance buffers must stay alive as long as the acceleration structures that were built from them.
+
+Once built, a TLAS is bound for tracing via [Pipelines: Ray Tracing Pipelines](/wiki/pipelines/#ray-tracing-pipelines).
 
 ## Memory Blocks: Manual Suballocation & Aliasing
 
@@ -180,7 +279,27 @@ struct MemoryRequirements
 };
 ```
 
-If multiple resources will live in the same block, combine their requirements: take the maximum `size`/`alignment` needed and the bitwise AND of `memory_type_bits`, since the block's memory type must be compatible with everything allocated from it.
+If multiple resources will live in the same block, the block's `memory_type_bits` must be the bitwise AND of theirs, since its memory type has to be compatible with everything allocated from it, and its `alignment` the maximum of theirs.
+
+The `size`, though, depends on how you lay the resources out:
+
+- **Aliasing** - every resource created at the same `offset`, sharing one range: the block only needs `max(size)` across them.
+- **Side by side** - each resource at its own `offset`: the block must cover the furthest `offset + size`, i.e. `max(offset_i + size_i)`. Summing or maxing the sizes alone is not enough, because each `offset` is rounded up to that resource's alignment.
+
+```cpp
+daxa::MemoryRequirements const buffer_reqs = device.memory_requirements(buffer_info);
+daxa::MemoryRequirements const image_reqs = device.memory_requirements(image_info);
+
+u64 const image_offset = daxa::align_up(buffer_reqs.size, image_reqs.alignment);
+
+daxa::MemoryRequirements const combined = {
+    .size = image_offset + image_reqs.size, // NOT max(buffer_reqs.size, image_reqs.size)
+    .alignment = std::max(buffer_reqs.alignment, image_reqs.alignment),
+    .memory_type_bits = buffer_reqs.memory_type_bits & image_reqs.memory_type_bits,
+};
+```
+
+Getting this wrong is quiet: `create_buffer_from_memory_block`/`create_image_from_memory_block` do not check that `offset + size` fits inside the block, and neither Daxa nor the validation layer reports an out-of-range placement. Compute the block size yourself and keep it correct.
 
 ### Creating a memory block and allocating into it
 
@@ -203,7 +322,9 @@ daxa::ImageId image_a = device.create_image_from_memory_block({
 });
 ```
 
-`create_tlas_from_memory_block` works the same way for acceleration structures. Resources created this way are destroyed normally with `destroy_buffer`/`destroy_image`/`destroy_tlas` - this releases their view into the block, not the block's memory itself. `MemoryBlock` is a regular reference-counted object (not an SRO); its memory is freed once the last reference to it goes out of scope.
+`create_tlas_from_memory_block` works the same way for acceleration structures, except that `device.memory_requirements(...)` has no TLAS overload - it only accepts a `BufferInfo` or an `ImageInfo`. Size a TLAS's block through an equivalent buffer instead: query `device.memory_requirements(daxa::BufferInfo{.size = tlas_size})`, with `tlas_size` the `acceleration_structure_size` returned by `device.tlas_build_sizes(...)`.
+
+Resources created this way are destroyed normally with `destroy_buffer`/`destroy_image`/`destroy_tlas` - this releases their view into the block, not the block's memory itself. `MemoryBlock` is a regular reference-counted object (not an SRO), so **the handle must outlive every resource created from it**. With the default `PARENT_MUST_OUTLIVE_CHILD` instance flag, letting the last `MemoryBlock` reference go out of scope while a buffer or image still lives in it aborts with `[[DAXA ASSERT FAILURE]]: not all children have been destroyed prior to destroying object`; keep the handle alive until all of its resources have been destroyed.
 
 ### Aliasing memory between resources
 

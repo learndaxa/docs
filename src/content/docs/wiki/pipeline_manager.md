@@ -6,15 +6,17 @@ slug: wiki/pipeline-manager
 
 ## PipelineManager
 
-As Daxa is designed to be a GPU-driven centric API, we provide some code to be used within your shaders. This is in the form of `.inl` files, such as the core `daxa/daxa.inl` and the newer `daxa/utils/task_graph.inl`.
+As Daxa is designed to be a GPU-driven centric API, we provide some code to be used within your shaders. This is in the form of `.inl` files, such as the core `daxa/daxa.inl` and `daxa/utils/task_graph.inl`.
 
 As such, Daxa provides the PipelineManager util, which is meant to be used in the development phase of your app to iterate on your GPU code very quickly.
 
-PipelineManager is mainly designed on top of [Khronos' glslang library](https://github.com/khronosGroup/glslang), providing GLSL to SPIR-V compilation. However, PipelineManager doesn't generate SPIR-V for you to feed to Daxa's Pipeline API. PipelineManager ultimately manages the pipelines for you. It does this because this way, it can do much more for you, such as:
+PipelineManager is mainly designed on top of [Khronos' glslang library](https://github.com/khronosGroup/glslang), providing GLSL to SPIR-V compilation. Rather than handing you a SPIR-V blob to feed to Daxa's Pipeline API yourself, it compiles *and* manages the pipelines for you. It does this because this way, it can do much more for you, such as:
 
 - Hot reloading (with #include dependency tracking)
 - #includes files with line-numbered error messages
 - Virtual files
+
+(You can still get the SPIR-V it produces if you want it: set `write_out_spirv` on the manager's info to a directory, and each compiled shader's SPIR-V is written out there.)
 
 ### Usage
 
@@ -31,27 +33,27 @@ daxa::PipelineManager pipeline_manager = daxa::PipelineManager({
 });
 ```
 
-Once you have a pipeline manager, you can start making pipelines! The pipeline manager's minimum input is the `.source` field of the `.shader_info` field. Let's create a compute pipeline since those are simpler than raster pipelines, and the additional configuration for raster pipelines is identical to what's necessary in the core Daxa API. So, it's not unique to the PipelineManager.
+Once you have a pipeline manager, you can start making pipelines! The pipeline manager's minimum input is the `.source` field. Let's create a compute pipeline since those are simpler than raster pipelines, and the additional configuration for raster pipelines is identical to what's necessary in the core Daxa API. So, it's not unique to the PipelineManager.
 
 ```cpp
-auto compilation_result = pipeline_manager.add_compute_pipeline(/* daxa::ComputePipelineCompileInfo */{
-    .shader_info = /* daxa::ShaderCompileInfo */ {.source = /* ... */},
+auto compilation_result = pipeline_manager.add_compute_pipeline2(/* daxa::ComputePipelineCompileInfo2 */{
+    .source = /* ... */,
     .name = "compute_pipeline",
 });
 ```
 
-This `.source` field is a variant. It can be a path to a file `daxa::ShaderFile`, a raw string of code `daxa::ShaderCode`, or raw SPIR-V binary `daxa::ShaderByteCode`. Providing a SPIR-V binary negates most of the utility of the PipelineManager but is available if you need it. The other two are extremely useful. First, we'll start by just passing in a string of code.
+This `.source` field is a variant. It can be a path to a file `daxa::ShaderFile` or a raw string of code `daxa::ShaderCode`. First, we'll start by just passing in a string of code.
 
 ```cpp
-auto compilation_result = pipeline_manager.add_compute_pipeline({
-    .shader_info = {.source = daxa::ShaderCode{.string = R"glsl(
+auto compilation_result = pipeline_manager.add_compute_pipeline2({
+    .source = daxa::ShaderCode{.string = R"glsl(
 
         layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
         void main()
         {
         }
 
-    )glsl"}},
+    )glsl"},
     .name = "compute_pipeline",
 });
 ```
@@ -98,7 +100,7 @@ Now, to use `main.glsl` as our shader source file, we need to give its path to t
 
 ```text
 Failed to compile the compute_pipeline!
-Could not find file: "main.glsl"
+could not find file :"main.glsl"
 ```
 
 Alternatively, to provide the entire relative path, we can modify our PipelineManager to use our `src/` folder as a root look-up path for both source files and #includes by filling the `.root_paths` field in the PipelineManager creation info.
@@ -106,18 +108,16 @@ Alternatively, to provide the entire relative path, we can modify our PipelineMa
 ```cpp
 daxa::PipelineManager pipeline_manager = daxa::PipelineManager({
     .device = device,
-    .shader_compile_options = {
-        // src is now a root look-up path!
-        .root_paths = {
-            "src",
-        },
+    // src is now a root look-up path!
+    .root_paths = {
+        "src",
     },
     .name = "pipeline_manager",
 });
 
-auto compilation_result = pipeline_manager.add_compute_pipeline({
+auto compilation_result = pipeline_manager.add_compute_pipeline2({
     //So now we can say
-    .shader_info = {.source = daxa::ShaderFile{"main.glsl"}},
+    .source = daxa::ShaderFile{"main.glsl"},
     .name = "compute_pipeline",
 });
 ```
@@ -137,13 +137,19 @@ while (true) {
 This `.reload_all()` function returns a result variant, which you can use to check the reload result. This function doesn't necessarily do anything except check the timestamps of the files in the tracked dependency graph, so it can be the case that it returns a `daxa::NoPipelineChanged` value.
 
 ```cpp
-if (auto reload_err = std::get_if<daxa::PipelineReloadError>(&reloaded_result))
+if (auto reload_err = daxa::get_if<daxa::PipelineReloadError>(&reloaded_result))
     std::cout << "Failed to reload " << reload_err->message << '\n';
-if (auto _ = std::get_if<daxa::PipelineReloadSuccess>(&reloaded_result))
+if (auto _ = daxa::get_if<daxa::PipelineReloadSuccess>(&reloaded_result))
     std::cout << "Successfully reloaded!\n";
 ```
 
+`PipelineReloadResult` is a `daxa::Variant`, not a `std::variant`, so use `daxa::get_if` rather than `std::get_if`.
+
 If we were to modify our `main.glsl` shader file while this application was running, the pipeline manager would automatically recompile `compute_pipeline` for us, with no developer intervention. This is extremely useful for iteration times since you can change your shaders as much as you like while the application runs. If the shader fails to compile, then the pipeline will not be modified and thus will continue to use the old _working_ version.
+
+:::caution[Include tracking only covers the includes present when the pipeline was added]
+`reload_all()` keeps the pipeline's original list of watched files when it swaps in the recompiled pipeline, so a header you `#include` **for the first time during a reload** never joins that list - later edits to it do not trigger a recompile. Until this is fixed in Daxa, after adding a new `#include` to a shader, re-save a file that was already tracked to force the reload, or restart the application.
+:::
 
 Now is a good time to mention the Daxa shader files, which you can and should #include in your shaders for ease of development. These are in the Daxa include directory, but this can be hard to find when Daxa is pulled in as a CMake dependency (e.g. via `FetchContent` or as a git submodule). To remedy this, Daxa's CMake target provides a C++ #define which has the full path to the Daxa include directory: `DAXA_SHADER_INCLUDE_DIR`. We can add this to our `.root_paths` to allow us to `#include` the Daxa headers in our shaders.
 
@@ -165,7 +171,7 @@ void main()
 }
 ```
 
-More about Daxa's shader integration (how this header is useful) can be found [here](https://github.com/Ipotrick/Daxa/tree/master/wiki/ShaderIntegration.md).
+More about Daxa's shader integration (how this header is useful) can be found on [Shader Integration & Bindless](/wiki/shader-integration/).
 
 The last thing to mention for PipelineManager is the ability to register virtual files.
 
@@ -209,10 +215,10 @@ pipeline_manager.add_virtual_file({
     )glsl",
 });
 
-auto compilation_result = pipeline_manager.add_compute_pipeline({
+auto compilation_result = pipeline_manager.add_compute_pipeline2({
     // Here, we supply the path to the file, but our virtual file look-up
     // matches, and so the virtual file is used instead!
-    .shader_info = {.source = daxa::ShaderFile{"my_file"}},
-    .name = APPNAME_PREFIX("compute_pipeline"),
+    .source = daxa::ShaderFile{"my_file"},
+    .name = "compute_pipeline",
 });
 ```

@@ -96,7 +96,9 @@ Daxa's TaskGraph is a precompilable render graph. It's the concrete realization 
 
 ### Before: Manual Barriers {#manual-sync-vs-taskgraph}
 
-Here's a simple renderer written by hand, with explicit barriers. Notice what happens when you add feature toggles:
+Here's a simple renderer written by hand, with explicit barriers. Notice what happens when you add feature toggles.
+
+> The snippet below is deliberately written as generic Vulkan-style pseudo-code, not Daxa: Daxa's own `BarrierInfo` has only `src_access`/`dst_access`, because a `daxa::Access` already carries its pipeline stage (see [Synchronization](/wiki/synchronization/)). Spelling stages and accesses out separately here makes the manual work visible; the point is the *amount* of it, not the exact API.
 
 ```cpp
 void render_frame(bool enable_rtao) {
@@ -220,16 +222,21 @@ Now you're manually managing barriers across multiple code paths. If RTAO is on,
 Here's the same renderer as a TaskGraph:
 
 ```cpp
-auto graph = daxa::TaskGraph({.device = device});
+// .swapchain is required because the graph writes the swapchain image below.
+auto graph = daxa::TaskGraph({.device = device, .swapchain = swapchain});
+
+// The swapchain image enters the graph as an external resource, supplied per frame.
+daxa::ExternalTaskImage ext_swapchain = daxa::ExternalTaskImage({.is_swapchain_image = true, .name = "swapchain"});
+daxa::TaskImageView swapchain_image = graph.register_image(ext_swapchain);
 
 // G-buffer pass
 graph.add_task(daxa::Task::Raster("g-buffer")
     .writes(task_g_buffer)
     .executes([=](daxa::TaskInterface ti) {
-        ti.recorder.begin_rendering(...);
-        ti.recorder.set_pipeline(g_buffer_pipeline);
-        ti.recorder.draw();
-        ti.recorder.end_rendering();
+        auto rr = std::move(ti.recorder).begin_renderpass({...});
+        rr.set_pipeline(g_buffer_pipeline);
+        rr.draw();
+        ti.recorder = std::move(rr).end_renderpass();
     }));
 
 if (enable_rtao) {
@@ -279,27 +286,27 @@ graph.add_task(daxa::Task::Raster("shadow geometry draw")
     .reads(task_shadow_culled_geometry)
     .writes(task_shadow_map)
     .executes([=](daxa::TaskInterface ti) {
-        ti.recorder.begin_rendering(...);
-        ti.recorder.set_pipeline(shadow_geometry_pipeline);
-        ti.recorder.push_constant(...);
-        ti.recorder.draw_indirect(...);
-        ti.recorder.end_rendering();
+        auto rr = std::move(ti.recorder).begin_renderpass({...});
+        rr.set_pipeline(shadow_geometry_pipeline);
+        rr.push_constant(...);
+        rr.draw_indirect(...);
+        ti.recorder = std::move(rr).end_renderpass();
     }));
 
 // Lighting pass - RTAO is optional
-auto rtao_result = enable_rtao ? task_rtao_result : daxa::NullTaskImage();
+auto rtao_result = enable_rtao ? task_rtao_result : daxa::NullTaskImage;
 graph.add_task(daxa::Task::Raster("lighting")
     .reads(task_g_buffer)
     .reads(rtao_result)  // If null, TaskGraph ignores this read
     .reads(task_shadow_map)
     .writes(task_lit_result)
     .executes([=](daxa::TaskInterface ti) {
-        ti.recorder.begin_rendering(...);
-        ti.recorder.set_pipeline(lighting_pipeline);
-        // ti.id() of a NullTaskImage returns a special null value that shaders can detect
-        ti.recorder.push_constant(...);
-        ti.recorder.draw();
-        ti.recorder.end_rendering();
+        auto rr = std::move(ti.recorder).begin_renderpass({...});
+        rr.set_pipeline(lighting_pipeline);
+        // ti.view() of a NullTaskImage returns a special null value that shaders can detect
+        rr.push_constant(...);
+        rr.draw();
+        ti.recorder = std::move(rr).end_renderpass();
     }));
 
 // Composite pass (compute) - read lit_result and shadow map
@@ -313,10 +320,29 @@ graph.add_task(daxa::Task::Compute("composite")
         ti.recorder.dispatch();
     }));
 
-// Compile and execute
+// Compile and execute. Every graph needs at least one submit() - complete()
+// aborts without one - and presenting through the graph needs present().
+graph.submit({});
+graph.present({});
 graph.complete({});
-graph.execute({});
+
+// Per frame: bind the acquired image, then execute.
+daxa::ImageId acquired = swapchain.acquire_next_image();
+if (!acquired.is_empty()) {
+    ext_swapchain.set_image(acquired);
+    graph.execute({});
+}
 ```
+
+Note how the raster tasks record their draws. `begin_renderpass` is `&&`-qualified and *consumes* the `CommandRecorder`, returning a `RenderCommandRecorder`; `end_renderpass` consumes that and gives the `CommandRecorder` back. Inside a task callback, where the recorder lives in `ti.recorder`, that means moving it out and back:
+
+```cpp
+auto rr = std::move(ti.recorder).begin_renderpass({/* RenderPassBeginInfo */});
+// ... draws on rr ...
+ti.recorder = std::move(rr).end_renderpass();
+```
+
+This is the only way to record raster work in a task. (There is no `begin_rendering`/`end_rendering`.) See [Command Recording & Submission](/wiki/command-recording/#raster-pass) for the full `begin_renderpass` info struct.
 
 ### What TaskGraph Does
 
@@ -391,4 +417,4 @@ TaskGraph also optimizes memory allocation. Each transient resource has a limite
 
 `rtao_trace` and `rtao_spatial` don't overlap, so they share **memory region A**. In manual code, you'd allocate them separately and try to alias them by hand—which is **dangerous** (silent corruption if you forget a lifetime) and error-prone at scale. TaskGraph computes lifetimes automatically and packs allocations mathematically correctly. A 10-stage denoising pipeline saves 30-50% GPU memory with zero manual bookkeeping.
 
-One subtlety: memory aliasing and barrier reduction can conflict. Packing memory tightly might force a specific execution order to respect lifetimes, which prevents the optimal task reordering. Conversely, reordering for minimal barriers might extend resource lifetimes, reducing aliasing opportunities. TaskGraph provides options: optimize for memory pressure, minimize barriers, or balance both. You declare your priorities, and TaskGraph computes a schedule that respects them.
+One subtlety: memory aliasing and barrier reduction can conflict. Packing memory tightly might force a specific execution order to respect lifetimes, which prevents the optimal task reordering. Conversely, reordering for minimal barriers might extend resource lifetimes, reducing aliasing opportunities. TaskGraph exposes these as three independent booleans on `TaskGraphInfo` rather than as a single priority setting: `reorder_tasks` (let TaskGraph move tasks to reduce barriers), `optimize_transient_lifetimes` (shrink each transient's live range), and `alias_transients` (share memory between transients whose lifetimes don't overlap). Turn off whichever conflicts with what you care about - see [TaskGraph Construction Options](/wiki/taskgraph-bottom-up/#19-advanced-taskgraph-construction-options).

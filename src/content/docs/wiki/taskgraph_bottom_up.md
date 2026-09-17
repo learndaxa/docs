@@ -18,14 +18,16 @@ daxa::TaskGraph task_graph = daxa::TaskGraph({
     .name = "my task graph",
 });
 
+task_graph.submit({});
 task_graph.complete({});
 task_graph.execute({});
 ```
 
+- `submit()` marks where the graph submits its recorded work to the GPU. **Every graph needs at least one**, even an empty one - `complete()` aborts with `ERROR: All task graphs must have at least one submission!` otherwise.
 - `complete()` finalizes recording. From this point on, no more tasks or resources can be added, and TaskGraph computes the batches and synchronization for everything recorded so far.
 - `execute()` runs the recorded task callbacks, in whatever order/batches TaskGraph decided on.
 
-With nothing recorded yet, `complete()` and `execute()` do nothing observable - but this is the skeleton every graph is built on.
+With nothing else recorded, this graph does nothing observable - but this is the skeleton every graph is built on. Every example below ends with the same `submit({})` / `complete({})` pair; graphs that also present a swapchain image add a `present({})` between them (see step 8).
 
 ## 2. A Single Task
 
@@ -116,17 +118,22 @@ daxa::TaskImageView task_color = task_graph.create_task_image({
 ```c++
 task_graph.add_task(daxa::Task::Compute("render particles")
     .reads(task_particles)
-    .writes(task_color)
+    .writes(daxa::ImageViewType::REGULAR_2D, task_color)
     .executes([=](daxa::TaskInterface ti)
     {
         ti.recorder.set_pipeline(*render_particles_pipeline);
         ti.recorder.push_constant(RenderParticlesPush{
             .particles = ti.device_address(task_particles).value(),
-            .color = ti.id(task_color),
+            .color = ti.view(task_color),
         });
         ti.recorder.dispatch({.x = render_size.x / 8, .y = render_size.y / 8});
     }));
 ```
+
+Note the two image-specific details here, which every image attachment below repeats:
+
+- A shader reaches an image through an **image view**, so the push constant field is a `daxa_ImageViewId` and the value comes from `ti.view(...)`. `ti.id(...)` returns the raw `ImageId`, which does not convert to a `daxa_ImageViewId` - use it only where you actually want the image itself (`ti.device.info(ti.id(...))`, a `copy_image_to_image`, and so on).
+- For TaskGraph to create that view, the attachment has to say what kind of view it is: pass a `daxa::ImageViewType` as the first argument to `.reads(...)` / `.writes(...)` / `.reads_writes(...)`. Leaving it out aborts at execution time with a message naming the missing view type.
 
 `task_particles`'s timeline now has three entries: write (init) -> read_write (update) -> read (render). Each entry forms a dependency on the one before it, so the only valid order for these three tasks is `init -> update -> render`.
 
@@ -144,11 +151,11 @@ daxa::TaskImageView task_background = task_graph.create_task_image({
 });
 
 task_graph.add_task(daxa::Task::Compute("render background")
-    .writes(task_background)
+    .writes(daxa::ImageViewType::REGULAR_2D, task_background)
     .executes([=](daxa::TaskInterface ti)
     {
         ti.recorder.set_pipeline(*render_background_pipeline);
-        ti.recorder.push_constant(RenderBackgroundPush{.background = ti.id(task_background)});
+        ti.recorder.push_constant(RenderBackgroundPush{.background = ti.view(task_background)});
         ti.recorder.dispatch({.x = render_size.x / 8, .y = render_size.y / 8});
     }));
 ```
@@ -159,14 +166,14 @@ Now add a fifth task that combines both images:
 
 ```c++
 task_graph.add_task(daxa::Task::Compute("composite")
-    .reads(task_background)
-    .reads_writes(task_color)
+    .reads(daxa::ImageViewType::REGULAR_2D, task_background)
+    .reads_writes(daxa::ImageViewType::REGULAR_2D, task_color)
     .executes([=](daxa::TaskInterface ti)
     {
         ti.recorder.set_pipeline(*composite_pipeline);
         ti.recorder.push_constant(CompositePush{
-            .background = ti.id(task_background),
-            .color = ti.id(task_color),
+            .background = ti.view(task_background),
+            .color = ti.view(task_color),
         });
         ti.recorder.dispatch({.x = render_size.x / 8, .y = render_size.y / 8});
     }));
@@ -199,6 +206,12 @@ All the task resources created so far have been **transient** - TaskGraph alloca
 
 An `ExternalTaskBuffer` wraps an existing `BufferId` and is registered into the graph with `register_buffer`, which returns a `TaskBufferView` to use in task attachments:
 
+:::caution[`register_buffer` / `register_blas` / `register_tlas` are broken on current Daxa master]
+They build the returned view positionally (`{resources.size() - 1u, unique_index}`) against a `TaskBufferView` whose layout is `{u32 task_graph_index : 31; u32 double_buffer_index : 1; u32 index;}`. The resource index lands in `task_graph_index`, the graph index is truncated into a one-bit field, and `index` is never set - so the view comes back malformed (`is_empty()` is true for the first registered resource) and the first task that uses it aborts with `Detected empty task resource id`.
+
+`register_image` is unaffected, and `create_task_*` resources are fine. Until this is fixed in Daxa, the return value for external **buffers** and acceleration structures cannot be used: keep persistent buffer data in a transient task buffer, or manually create the view from the buffer.
+:::
+
 ```c++
 // streamer_data_buffer is passed in - created elsewhere, persists across graph recreations
 daxa::ExternalTaskBuffer ext_streamer_data = daxa::ExternalTaskBuffer({
@@ -215,6 +228,7 @@ void recreate_graph() {
         .writes(task_streamer_data)
         .executes([=](daxa::TaskInterface ti) { /* ... */ }));
     
+    task_graph.submit({});
     task_graph.complete({});
 }
 ```
@@ -231,7 +245,8 @@ daxa::ExternalTaskImage ext_swapchain_image = daxa::ExternalTaskImage({
 });
 
 void recreate_graph() {
-    task_graph = daxa::TaskGraph({.device = device, .name = "render graph"});
+    // A graph that registers a swapchain image must know about the swapchain.
+    task_graph = daxa::TaskGraph({.device = device, .swapchain = swapchain, .name = "render graph"});
     
     daxa::TaskImageView task_swapchain = task_graph.register_image(ext_swapchain_image);
     
@@ -240,14 +255,23 @@ void recreate_graph() {
         .writes(task_swapchain)
         .executes([=](daxa::TaskInterface ti) { /* ... */ }));
     
+    task_graph.submit({});
+    task_graph.present({}); // the graph does the presenting
     task_graph.complete({});
 }
 
 // Each frame, update the external resource and execute
-auto swapchain_image = device.acquire_swapchain_image({...});
-ext_swapchain_image.set_image(swapchain_image.value());
+daxa::ImageId swapchain_image = swapchain.acquire_next_image();
+if (swapchain_image.is_empty()) return; // out of date / minimized - skip the frame
+ext_swapchain_image.set_image(swapchain_image);
 task_graph.execute({});
 ```
+
+Three things about the swapchain path are easy to get wrong:
+
+- The graph itself needs `.swapchain` in its `TaskGraphInfo`; `register_image` on a swapchain image asserts without it.
+- Presenting goes through `task_graph.present({})`, recorded between `submit({})` and `complete({})`.
+- The image is acquired from the **swapchain**, not the device: `swapchain.acquire_next_image()`, which returns a plain `daxa::ImageId` (empty when the swapchain is out of date or the window is minimized). There is no `device.acquire_swapchain_image` or `device.present_image`.
 
 **Switching Out External Resources Between Executions**
 
@@ -290,7 +314,8 @@ daxa::ExternalTaskImage ext_swapchain = daxa::ExternalTaskImage({
 });
 
 void recreate_graph() {
-    task_graph = daxa::TaskGraph({.device = device, .name = "render graph"});
+    // .swapchain is required because the graph registers a swapchain image below.
+    task_graph = daxa::TaskGraph({.device = device, .swapchain = swapchain, .name = "render graph"});
 
     // Transient - allocated and freed by TaskGraph each execution
     daxa::TaskImageView task_color = task_graph.create_task_image({
@@ -311,6 +336,8 @@ void recreate_graph() {
         .writes(task_swapchain)
         .executes([=](daxa::TaskInterface ti) { /* ... */ }));
 
+    task_graph.submit({});
+    task_graph.present({});
     task_graph.complete({});
     graph_dirty = false;
 }
@@ -321,14 +348,12 @@ while (running) {
         recreate_graph();
     }
 
-    auto swapchain_image = device.acquire_swapchain_image({.swapchain = swapchain});
-    if (swapchain_image.is_empty()) continue;
+    daxa::ImageId swapchain_image = swapchain.acquire_next_image();
+    if (swapchain_image.is_empty()) continue; // out of date, or the window is minimized
 
-    // Bind this frame's swapchain image, then execute
-    ext_swapchain.set_image(swapchain_image.value());
+    // Bind this frame's swapchain image, then execute - present({}) above does the presenting
+    ext_swapchain.set_image(swapchain_image);
     task_graph.execute({});
-
-    device.present_image({.swapchain = swapchain, .image = swapchain_image.value()});
 }
 ```
 
@@ -438,16 +463,16 @@ daxa::TaskImageView task_history = task_graph.create_task_image({
 });
 
 task_graph.add_task(daxa::Task::Compute("taa resolve")
-    .reads(task_history.previous())   // last frame's accumulated result
-    .reads(task_color)
-    .writes(task_history.current())   // this frame's output
+    .reads(daxa::ImageViewType::REGULAR_2D, task_history.previous())   // last frame's accumulated result
+    .reads(daxa::ImageViewType::REGULAR_2D, task_color)
+    .writes(daxa::ImageViewType::REGULAR_2D, task_history.current())   // this frame's output
     .executes([=](daxa::TaskInterface ti)
     {
         ti.recorder.set_pipeline(*taa_pipeline);
         ti.recorder.push_constant(TaaPush{
-            .history = ti.id(task_history.previous()),
-            .color   = ti.id(task_color),
-            .output  = ti.id(task_history.current()),
+            .history = ti.view(task_history.previous()),
+            .color   = ti.view(task_color),
+            .output  = ti.view(task_history.current()),
         });
         ti.recorder.dispatch(/* ... */);
     }));
@@ -555,14 +580,14 @@ task_graph.add_task(daxa::Task::Raster("render scene")
 
 `TaskAccessConsts` also has short aliases: `CA` for `COLOR_ATTACHMENT`, `ICR` for `INDIRECT_COMMAND_READ`, and single-letter shorthands on per-stage partials like `COMPUTE_SHADER::R` / `COMPUTE_SHADER::W` / `COMPUTE_SHADER::RW`.
 
-You can also construct a `TaskAccess` directly from a `daxa::TaskStages` and a `daxa::TaskAccessType`, or combine existing constants with `|`, which is handy when the access is determined at runtime:
+A `TaskAccess` is a `daxa::TaskStages` (`.stage`) plus a `daxa::TaskAccessType` (`.type`), so you can construct one directly, `|` two whole `TaskAccess` values together, or take a constant and overwrite one half of it when the access is determined at runtime. Note that `|` is defined for `TaskAccess`, not for `TaskAccessType` - to change just the access type, assign one of the `TaskAccessType` constants (`READ`, `WRITE`, `READ_WRITE`, `SAMPLE`, ...) to `.type`:
 
 ```c++
 using namespace daxa::TaskAccessConsts;
 
 daxa::TaskAccess access = FRAGMENT_SHADER::READ;
 if (pass_also_updates_buffer)
-    access = access.access | TaskAccessType::WRITE;
+    access.type = TaskAccessType::READ_WRITE;
 
 task.uses(access, task_buffer);
 ```
@@ -615,20 +640,20 @@ daxa::TaskImageView task_chain = task_graph.create_task_image({
 for (u32 dst_mip = 1; dst_mip < 5; ++dst_mip)
 {
     task_graph.add_task(daxa::Task::Compute("downsample mip " + std::to_string(dst_mip))
-        .reads(task_chain.mips(dst_mip - 1, 1))
-        .writes(task_chain.mips(dst_mip, 1))
+        .reads(daxa::ImageViewType::REGULAR_2D, task_chain.mips(dst_mip - 1, 1))
+        .writes(daxa::ImageViewType::REGULAR_2D, task_chain.mips(dst_mip, 1))
         .executes([=](daxa::TaskInterface ti)
         {
             ti.recorder.push_constant(DownsamplePush{
-                .src = ti.id(task_chain.mips(dst_mip - 1, 1)),
-                .dst = ti.id(task_chain.mips(dst_mip, 1)),
+                .src = ti.view(task_chain.mips(dst_mip - 1, 1)),
+                .dst = ti.view(task_chain.mips(dst_mip, 1)),
             });
             ti.recorder.dispatch(/* ... */);
         }));
 }
 ```
 
-TaskGraph uses the slice in each attachment to create the correct `VkImageView` for that subresource range and fills it into `ti.id(...)` / `ti.attachment_shader_blob` accordingly.
+TaskGraph uses the slice in each attachment to create the correct `VkImageView` for that subresource range and fills it into `ti.view(...)` / `ti.attachment_shader_blob` accordingly.
 
 **Sync tracking is not at subresource granularity.** Barriers and dependency tracking operate on the whole image, regardless of which slice each attachment covers. Two tasks that write different mip levels of the same `TaskImageView` will still be ordered against each other by TaskGraph, even though they touch disjoint subresources and could theoretically run concurrently.
 
@@ -652,13 +677,13 @@ if (debug_mode)
 /* ... other code fills debug overlay ... */
 
 task_graph.add_task(daxa::Task::Compute("composite")
-    .reads(task_color)
-    .reads(task_debug_overlay)  // excluded from tracking when NullTaskImage
+    .reads(daxa::ImageViewType::REGULAR_2D, task_color)
+    .reads(daxa::ImageViewType::REGULAR_2D, task_debug_overlay)  // excluded from tracking when NullTaskImage
     .executes([=](daxa::TaskInterface ti)
     {
         ti.recorder.push_constant(CompositePush{
-            .color   = ti.id(task_color),
-            .overlay = ti.id(task_debug_overlay),  // zero when null
+            .color   = ti.view(task_color),
+            .overlay = ti.view(task_debug_overlay),  // zero when null
         });
         ti.recorder.dispatch(/* ... */);
     }));
@@ -668,7 +693,7 @@ task_graph.add_task(daxa::Task::Compute("composite")
 void main()
 {
     vec4 result = imageLoad(daxa_image2D(push.color), coord);
-    if (push.overlay != 0)  // skip when no overlay is bound
+    if (push.overlay.value != 0)  // skip when no overlay is bound
         result = mix(result, imageLoad(daxa_image2D(push.overlay), coord), 0.5);
     imageStore(daxa_image2D(push.color), coord, result);
 }
@@ -751,7 +776,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 void main()
 {
     CameraData cam = deref(push.camera);
-    Particle p     = deref(push.particles[gl_GlobalInvocationID.x]);
+    Particle p     = deref_i(push.particles, gl_GlobalInvocationID.x);
     imageStore(daxa_image2D(push.color), ivec2(gl_GlobalInvocationID.xy), /* ... */);
 }
 ```
@@ -761,8 +786,9 @@ The `daxa_BufferPtr`, `daxa_ImageViewId`, and `daxa_u32vec2` types are part of D
 The shared `.inl` the shader includes defines the push constant struct:
 
 ```c
-#include "daxa.inl"
 // render_particles.inl  (included by both shader and C++)
+#include <daxa/daxa.inl>
+
 struct RenderParticlesPush
 {
     daxa_BufferPtr(Particle)   particles;  // (3) push constant field
@@ -777,7 +803,7 @@ And the C++ side - callback function defined elsewhere, views passed as paramete
 ```c++
 // Callback defined in a task-specific cpp file...
 void render_particles_task(
-    daxa::TaskInterface &  ti,
+    daxa::TaskInterface    ti,              // by value - .executes passes TaskInterface by value
     daxa::TaskBufferView   task_particles,  // (4) function parameter
     daxa::TaskBufferView   task_camera,     // (4) function parameter
     daxa::TaskImageView    task_color)      // (4) function parameter
@@ -787,7 +813,7 @@ void render_particles_task(
     ti.recorder.push_constant(RenderParticlesPush{
         .particles   = ti.device_address(task_particles).value(),  // (2) attachment → push constant
         .camera      = ti.device_address(task_camera).value(),     // (2) attachment → push constant
-        .color       = ti.id(task_color),                          // (2) attachment → push constant
+        .color       = ti.view(task_color),                        // (2) attachment → push constant
         .render_size = {sz.x, sz.y},
     });
     ti.recorder.dispatch({.x = sz.x / 8, .y = sz.y / 8});
@@ -797,7 +823,7 @@ void render_particles_task(
 task_graph.add_task(daxa::Task::Compute("render particles")
     .reads(task_particles)  // (1) attachment
     .reads(task_camera)     // (1) attachment
-    .writes(task_color)     // (1) attachment
+    .writes(daxa::ImageViewType::REGULAR_2D, task_color)     // (1) attachment
     .executes(
         render_particles_task, 
         task_particles, task_camera, task_color)); // (5) pass to function
@@ -816,6 +842,9 @@ The head for "render particles" looks like this, with the push constant struct d
 
 ```c
 // render_particles.inl
+#include <daxa/daxa.inl>
+#include <daxa/utils/task_graph.inl>
+
 DAXA_DECL_COMPUTE_TASK_HEAD_BEGIN(RenderParticlesHead)
 DAXA_TH_BUFFER_PTR(CS::READ,  daxa_BufferPtr(Particle),   particles)
 DAXA_TH_BUFFER_PTR(CS::READ,  daxa_BufferPtr(CameraData), camera)
@@ -831,10 +860,27 @@ struct RenderParticlesPush
 
 Each line is the single centralized description for that resource: it covers both the attachment declaration and the shader-side field in one place. `DAXA_TH_BLOB` embeds the generated shader struct into the push constant alongside any non-attachment data, and since the whole `.inl` file is shared, C++ and GLSL see the same layout.
 
+Because the resources now live inside the blob, the shader reaches them through the blob's field name rather than directly off the push constant:
+
+```glsl
+// render_particles.glsl, head version
+#include "render_particles.inl"
+
+DAXA_DECL_PUSH_CONSTANT(RenderParticlesPush, push)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+void main()
+{
+    CameraData cam = deref(push.attachments.camera);
+    Particle p     = deref_i(push.attachments.particles, gl_GlobalInvocationID.x);
+    imageStore(daxa_image2D(push.attachments.color), ivec2(gl_GlobalInvocationID.xy), /* ... */);
+}
+```
+
 With a head, the callback function needs no view parameters at all. Attachments are accessible inside any function via `RenderParticlesHead::Info::AT.resource_name`, and `using namespace RenderParticlesHead::Info` brings `AT` into scope directly. Because the function takes only `ti`, it can also be passed directly to `.executes` - the same style as the inline example above:
 
 ```c++
-void render_particles_task(daxa::TaskInterface & ti)
+void render_particles_task(daxa::TaskInterface ti)
 {
     using namespace RenderParticlesHead::Info;
     // AT.particles, AT.camera, AT.color are directly accessible - no parameters needed.
@@ -926,7 +972,7 @@ Daxa exposes these as `daxa::Queue` constants:
 - `QUEUE_COMPUTE_0` through `QUEUE_COMPUTE_3` — up to four async compute queues
 - `QUEUE_TRANSFER_0` and `QUEUE_TRANSFER_1` — up to two async DMA transfer queues
 
-Not all GPUs expose all queues. Whether a queue is available depends on the hardware and driver; query queue support through the device before relying on a specific queue being present.
+Not all GPUs expose all queues. Whether a queue is available depends on the hardware and driver; only `QUEUE_MAIN` is guaranteed. Query the rest with `device.queue_count(daxa::QueueType::COMPUTE)` / `device.queue_count(daxa::QueueType::TRANSFER)` and fall back to `QUEUE_MAIN` before relying on a specific queue being present.
 
 **When async queues actually help.** Moving work to a second queue is only worth the added complexity in a few recurring scenarios:
 
@@ -949,6 +995,8 @@ Between two submit points, tasks on different queues can freely run in parallel.
 **Assigning a task to a queue** is done with `.uses_queue(queue)` at recording time:
 
 ```c++
+// There is no create_task_blas - acceleration structures only enter a graph as external
+// resources, via daxa::ExternalTaskBlas + task_graph.register_blas(...).
 task_graph.add_task(daxa::Task::Compute("build acceleration structures")
     .reads_writes(task_blas)
     .uses_queue(daxa::QUEUE_COMPUTE_0)
@@ -961,6 +1009,8 @@ task_graph.add_task(daxa::Task::Transfer("stream textures")
 ```
 
 The `default_queue` field in `TaskGraphInfo` sets the queue for all tasks that do not call `.uses_queue(...)` explicitly.
+
+Note that unlike buffers and images, acceleration structures have no transient form: there is no `create_task_blas`/`create_task_tlas`. A BLAS or TLAS reaches a graph only as an external resource - `daxa::ExternalTaskBlas` / `daxa::ExternalTaskTlas` plus `task_graph.register_blas(...)` / `register_tlas(...)` - which are affected by the `register_*` defect described in [section 7](#7-external-task-resources).
 
 TaskGraph has extensive validation for cross-queue misuse. Writing to the same resource on two different queues between submit points — where no semaphore can be inserted — is caught and reported as an error, since there is no safe way to order those accesses without a submission boundary between them.
 
